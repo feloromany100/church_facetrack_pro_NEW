@@ -2,13 +2,9 @@
 facetrack/workers/camera_worker.py
 
 QThread worker for the PySide6 UI.
-Now delegates directly to the shared core classes:
+Delegates to:
   - facetrack.core.FrameCapture  — frame acquisition
   - facetrack.core.FrameProcessor — inference
-
-Before this refactor, CameraWorker had its own capture loop AND called
-RecognitionEngine which was a partial re-implementation of inference.py.
-Both of those are gone — this file is now pure Qt plumbing.
 """
 
 import logging
@@ -22,6 +18,7 @@ from facetrack.core.frame_processor import FrameProcessor
 from facetrack.models.camera import CameraConfig, CameraStatus
 
 logger = logging.getLogger(__name__)
+
 
 class CameraWorker(QObject):
     """
@@ -55,7 +52,7 @@ class CameraWorker(QObject):
     ):
         super().__init__()
         self.config = config
-        self._detect_every_n = detect_every_n
+        self._detect_every_n = max(1, detect_every_n)
         self._active = False
 
         self._shared_faiss_index = shared_faiss_index
@@ -65,7 +62,6 @@ class CameraWorker(QObject):
         self._capture: FrameCapture = None
         self._processor: FrameProcessor = None
 
-        # Session paths forwarded to FrameProcessor for CSV + unknown crops
         self._session_folder = session_folder
         self._unknowns_dir = unknowns_dir
         self._csv_path = csv_path
@@ -73,6 +69,19 @@ class CameraWorker(QObject):
             from facetrack.services.config_service import ConfigService
             cfg = ConfigService().load()
         self._cfg = cfg
+
+    # ------------------------------------------------------------------ #
+    # Public API (thread-safe)                                             #
+    # ------------------------------------------------------------------ #
+
+    def set_detect_every_n(self, n: int) -> None:
+        """
+        Update the inference-skip rate at runtime.
+
+        Thread-safe in CPython: a single integer assignment under the GIL
+        is atomic.  No lock needed for this single primitive attribute.
+        """
+        self._detect_every_n = max(1, int(n))
 
     # ------------------------------------------------------------------ #
     # Lifecycle (called from QThread)                                      #
@@ -86,7 +95,6 @@ class CameraWorker(QObject):
 
         self.status_changed.emit(cam_id, CameraStatus.CONNECTING.value)
 
-        # Initialise the shared FrameProcessor
         self._processor = FrameProcessor(
             cam_id=cam_id,
             cfg=self._cfg,
@@ -105,7 +113,6 @@ class CameraWorker(QObject):
             self.error.emit(cam_id, msg)
             return
 
-        # Initialise the shared FrameCapture
         self._capture = FrameCapture(source=source, target_fps=30.0)
 
         self.status_changed.emit(cam_id, CameraStatus.LIVE.value)
@@ -147,13 +154,15 @@ class CameraWorker(QObject):
                     fps_timer = time.time()
 
                 # Inference every N frames
-                n = max(1, self._detect_every_n)
+                # NOTE: _detect_every_n may be updated from the main thread via
+                # set_detect_every_n(); the GIL makes this read atomic in CPython.
+                n = self._detect_every_n
                 if frame_count % n == 0:
                     detections = self._processor.process(frame_bgr)
                     self.detection_ready.emit(cam_id, detections)
 
-                # Yield control to the Qt event loop so signals can be processed
-                QThread.msleep(1)
+                # FrameCapture._rate_limited already sleeps for the inter-frame
+                # interval; no additional sleep needed here.
 
         except Exception as e:
             logger.error("CameraWorker loop error cam %d: %s", cam_id, e)
@@ -172,9 +181,6 @@ class CameraWorker(QObject):
         import cv2
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         h, w, ch = frame_rgb.shape
-        # Pass strides[0] as bytes-per-line to handle non-contiguous arrays correctly.
-        # Keep a reference to frame_rgb alive until after the copy so Qt doesn't
-        # read freed memory.
         qimg = QImage(
             frame_rgb.data, w, h,
             frame_rgb.strides[0],

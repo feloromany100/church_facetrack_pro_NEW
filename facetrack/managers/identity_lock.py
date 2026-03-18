@@ -7,6 +7,9 @@ import faiss
 from collections import defaultdict
 from typing import Dict, List, Tuple, Optional
 
+from facetrack.types import TrackId
+
+
 class IdentityLock:
     """Lock identity only when very confident + consistent."""
 
@@ -19,10 +22,10 @@ class IdentityLock:
         self.lock_threshold = lock_threshold
         self.consensus_frames = consensus_frames
         self.verify_sim = verify_sim
-        self.locked: Dict[int, Tuple[str, float, int, str, np.ndarray]] = {}
-        self.lock_candidates: Dict[int, List[Tuple[str, float]]] = defaultdict(list)
+        self.locked: Dict[TrackId, Tuple[str, float, int, str, np.ndarray]] = {}
+        self.lock_candidates: Dict[TrackId, List[Tuple[str, float]]] = defaultdict(list)
 
-    def try_lock(self, track_id: int, name: str, score: float,
+    def try_lock(self, track_id: TrackId, name: str, score: float,
                  age: int, gender: str,
                  embedding: Optional[np.ndarray] = None) -> bool:
         """Lock only after multiple high-confidence recognitions."""
@@ -45,7 +48,7 @@ class IdentityLock:
             return True
         return False
 
-    def get_locked(self, track_id: int,
+    def get_locked(self, track_id: TrackId,
                    current_embedding: Optional[np.ndarray] = None
                    ) -> Optional[Tuple[str, float, int, str]]:
         """Return locked identity, verifying current face matches stored embedding."""
@@ -62,9 +65,6 @@ class IdentityLock:
                 return None
         return name, score, age, gender
 
-    def is_locked(self, track_id: int) -> bool:
-        return track_id in self.locked
-
-    def clear_track(self, track_id: int):
+    def clear_track(self, track_id: TrackId):
         self.locked.pop(track_id, None)
         self.lock_candidates.pop(track_id, None)

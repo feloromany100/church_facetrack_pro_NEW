@@ -13,7 +13,10 @@ from threading import Thread
 from queue import Queue as ThreadQueue
 from typing import Dict, List, Optional, Any
 
+from facetrack.types import TrackKey
+
 logger = logging.getLogger("UnknownManager")
+
 
 class UnknownManager:
     """
@@ -31,7 +34,8 @@ class UnknownManager:
 
         # Active identity records (id → metadata)
         self.unknown_identities: List[Dict[str, Any]] = []
-        self.track_to_unknown_id: Dict[int, int] = {}
+        # Keyed by (cam_id, track_id) tuples — see facetrack.types.TrackKey
+        self.track_to_unknown_id: Dict[TrackKey, int] = {}
         self.next_unknown_id = 1
 
         # FAISS flat index for fast embedding search (inner product = cosine after L2-norm)
@@ -40,7 +44,7 @@ class UnknownManager:
         self._faiss_id_map: List[int] = []   # faiss row → unknown_id
         self._faiss_dirty = False            # True when index needs rebuild
 
-        self.last_save_time: Dict[int, float] = {}
+        self.last_save_time: Dict[TrackKey, float] = {}
 
         # Async image saving
         self.save_queue: ThreadQueue = ThreadQueue(maxsize=100)
@@ -108,7 +112,7 @@ class UnknownManager:
     # Public API
     # ------------------------------------------------------------------
 
-    def process_unknown(self, track_id: int, current_embedding: Optional[np.ndarray],
+    def process_unknown(self, track_id: TrackKey, current_embedding: Optional[np.ndarray],
                         face_crop: np.ndarray, uid_prefix: str) -> Optional[int]:
         """Process and optionally save an unknown face image (non-blocking)."""
         unknown_id = self.resolve_unknown(track_id, current_embedding)
@@ -135,7 +139,8 @@ class UnknownManager:
         self.last_save_time[track_id] = now
         return unknown_id
 
-    def resolve_unknown(self, track_id: int, current_embedding: Optional[np.ndarray]) -> int:
+    def resolve_unknown(self, track_id: TrackKey,
+                        current_embedding: Optional[np.ndarray]) -> int:
         """
         Assign (or re-use) an unknown identity ID for this track.
 
@@ -158,8 +163,6 @@ class UnknownManager:
         new_id = self.next_unknown_id
         self.next_unknown_id += 1
 
-        # Store embedding if available; otherwise leave as None so the first
-        # good embedding can fill it in via update_embedding().
         emb_to_store = None
         if current_embedding is not None:
             emb_to_store = current_embedding.astype(np.float32).reshape(1, -1).copy()
@@ -176,7 +179,7 @@ class UnknownManager:
         os.makedirs(os.path.join(self.unknowns_dir, f"Unknown_{new_id}"), exist_ok=True)
         return new_id
 
-    def update_embedding(self, track_id: int, embedding: np.ndarray):
+    def update_embedding(self, track_id: TrackKey, embedding: np.ndarray):
         """
         Fill in the embedding for a track whose identity was created without one.
         Called whenever we get a valid embedding for a previously embedding-less unknown.
@@ -216,7 +219,7 @@ class UnknownManager:
         if self._save_thread.is_alive():
             logger.warning("UnknownManager save thread did not exit within the 3 s timeout")
 
-    def clear_track(self, track_id: int):
+    def clear_track(self, track_id: TrackKey):
         """Remove the track→unknown_id mapping (identity record is kept)."""
         self.track_to_unknown_id.pop(track_id, None)
         self.last_save_time.pop(track_id, None)

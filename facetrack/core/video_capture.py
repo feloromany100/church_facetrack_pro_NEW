@@ -31,6 +31,27 @@ logger = logging.getLogger(__name__)
 # Prevents CPU/GPU overload on high-fps cameras; inference is the bottleneck anyway.
 _DEFAULT_TARGET_FPS = 30
 
+
+def _suppress_cv2_logs() -> None:
+    """
+    Silence OpenCV's verbose internal warnings (DirectShow / MSMF on Windows).
+
+    cv2.setLogLevel() exists in OpenCV 4.5+ but is absent in some distribution
+    builds.  Fall back to the environment variable approach which works across
+    all versions.
+    """
+    import os
+    import cv2
+    # Environment variable works in all OpenCV versions
+    os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")
+    # API call works in 4.5+; skip silently if absent
+    if hasattr(cv2, "setLogLevel"):
+        try:
+            cv2.setLogLevel(3)   # 3 = LOG_LEVEL_ERROR
+        except Exception:
+            pass
+
+
 class FrameCapture:
     """
     Unified frame reader for:
@@ -68,7 +89,7 @@ class FrameCapture:
         self.reconnect_delay = reconnect_delay
 
         self._stop = False
-        self._cap = None     # cv2.VideoCapture (local/file)
+        self._cap = None        # cv2.VideoCapture (local/file)
         self._container = None  # av.Container (RTSP)
 
         self._is_rtsp = isinstance(self.source, str) and (
@@ -169,12 +190,10 @@ class FrameCapture:
 
     def _frames_local(self) -> Generator[np.ndarray, None, None]:
         import cv2
-        # Suppress verbose DirectShow / MSMF internal warnings
-        cv2.setLogLevel(0)
+        _suppress_cv2_logs()
 
         while not self._stop:
             logger.info("Opening local source: %s", self.source)
-            kwargs = {}
             if isinstance(self.source, int) and sys.platform.startswith("win"):
                 self._cap = cv2.VideoCapture(self.source, cv2.CAP_DSHOW)
             else:

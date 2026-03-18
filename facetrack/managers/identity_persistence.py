@@ -4,18 +4,20 @@ Identity persistence manager — maintains recognized identity when face is temp
 
 import numpy as np
 from typing import Dict, List, Optional, Tuple
-
 import time
+
+from facetrack.types import TrackId
+
 
 class IdentityPersistence:
     """Maintains identity for a track even when the face is temporarily not detected."""
 
     def __init__(self, persistence_time: float = 5.0):
         self.persistence_time = persistence_time
-        # Dict[track_id, List[Tuple[name, score, timestamp]]]
-        self.track_identities: Dict[int, List[Tuple[str, float, float]]] = {}
+        # Dict[TrackId, List[Tuple[name, score, timestamp]]]
+        self.track_identities: Dict[TrackId, List[Tuple[str, float, float]]] = {}
 
-    def update(self, track_id: int, name: str, score: float, current_time: float):
+    def update(self, track_id: TrackId, name: str, score: float, current_time: float):
         """Record a confirmed identity for this track at the given frame."""
         if track_id not in self.track_identities:
             self.track_identities[track_id] = []
@@ -29,7 +31,8 @@ class IdentityPersistence:
             if t > cutoff
         ]
 
-    def get_persistent_identity(self, track_id: int, current_time: float) -> Tuple[Optional[str], float]:
+    def get_persistent_identity(self, track_id: TrackId,
+                                 current_time: float) -> Tuple[Optional[str], float]:
         """
         Return the most confident known identity from recent history.
         Returns (name, score) or (None, 0.0) if nothing usable.
@@ -59,6 +62,6 @@ class IdentityPersistence:
         best_score = float(np.mean(scores_by_name[best_name]))
         return best_name, best_score
 
-    def clear_track(self, track_id: int):
+    def clear_track(self, track_id: TrackId):
         """Remove all history for this track."""
         self.track_identities.pop(track_id, None)

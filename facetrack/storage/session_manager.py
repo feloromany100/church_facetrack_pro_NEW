@@ -8,10 +8,14 @@ from typing import Tuple
 
 from facetrack.services.config_service import ConfigService
 
+
 def create_session(cfg=None) -> Tuple[str, str, str]:
     """
     Create a new session folder with timestamp.
     Returns: (session_folder, unknowns_dir, csv_path)
+
+    csv_path is returned as a constructed path for callers that may want to
+    write CSV data, but the file is NOT created here — callers own that decision.
     """
     if cfg is None:
         cfg = ConfigService().load()
@@ -24,8 +28,7 @@ def create_session(cfg=None) -> Tuple[str, str, str]:
 
     os.makedirs(unknowns_dir, exist_ok=True)
 
+    # Constructed path — caller writes to it if needed. Not created here.
     csv_path = os.path.join(session_folder, f"attendance_{session_id}.csv")
-    with open(csv_path, "w", encoding="utf-8") as f:
-        f.write("Name,Timestamp,Confidence,Age,Gender,TrackID\n")
 
     return session_folder, unknowns_dir, csv_path

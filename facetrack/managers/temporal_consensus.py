@@ -6,9 +6,13 @@ import numpy as np
 from collections import defaultdict, deque, Counter
 from typing import Dict, Tuple
 
+from facetrack.types import TrackId
+
+
 def _is_unknown(name: str) -> bool:
     """Return True if name represents an Unknown identity."""
     return name.startswith("Unknown")
+
 
 class TemporalConsensus:
     """Manages temporal voting and consensus for face recognition with optimized vote counting."""
@@ -16,19 +20,18 @@ class TemporalConsensus:
     def __init__(self, voting_window_size: int = 10, min_consensus_frames: int = 1):
         self._voting_window_size = int(max(1, voting_window_size))
         self._min_consensus_frames = int(max(1, min_consensus_frames))
-        self.track_votes: Dict[int, deque] = defaultdict(
+        self.track_votes: Dict[TrackId, deque] = defaultdict(
             lambda: deque(maxlen=self._voting_window_size))
-        self.track_confidences: Dict[int, deque] = defaultdict(
+        self.track_confidences: Dict[TrackId, deque] = defaultdict(
             lambda: deque(maxlen=self._voting_window_size))
-        # Use voting window size consistently for all attribute deques
-        self.track_ages: Dict[int, deque] = defaultdict(
+        self.track_ages: Dict[TrackId, deque] = defaultdict(
             lambda: deque(maxlen=self._voting_window_size))
-        self.track_genders: Dict[int, deque] = defaultdict(
+        self.track_genders: Dict[TrackId, deque] = defaultdict(
             lambda: deque(maxlen=self._voting_window_size))
-        self.track_quality_scores: Dict[int, deque] = defaultdict(
+        self.track_quality_scores: Dict[TrackId, deque] = defaultdict(
             lambda: deque(maxlen=self._voting_window_size))
         # Optimization: Maintain running vote counts for faster consensus
-        self.track_vote_counts: Dict[int, Dict[str, float]] = defaultdict(dict)
+        self.track_vote_counts: Dict[TrackId, Dict[str, float]] = defaultdict(dict)
 
     # -- Public property API (used by FrameProcessor._on_config_updated) ----
 
@@ -48,11 +51,11 @@ class TemporalConsensus:
     def min_consensus_frames(self, value: int) -> None:
         self._min_consensus_frames = int(max(1, value))
 
-    def add_vote(self, track_id: int, name: str, confidence: float,
+    def add_vote(self, track_id: TrackId, name: str, confidence: float,
                  age: int, gender: str, quality_score: float):
         """
         Record a new recognition vote for a track.
-        
+
         Weight scheme: confidence * quality_score, with Unknown votes discounted
         to 30% weight to allow known identities to win even with fewer frames.
         All five deques are appended together to stay in sync.
@@ -88,7 +91,7 @@ class TemporalConsensus:
             self.track_vote_counts[track_id][name] = 0.0
         self.track_vote_counts[track_id][name] += weight
 
-    def get_consensus(self, track_id: int) -> Tuple[str, float, int, str, float]:
+    def get_consensus(self, track_id: TrackId) -> Tuple[str, float, int, str, float]:
         """
         Get consensus name and stats for a track using optimized vote counting.
         Returns: (name, confidence, age, gender, avg_quality)
@@ -102,9 +105,6 @@ class TemporalConsensus:
         if not votes:
             return "Unknown", 0.0, 0, "", 0.0
 
-        # Optimization: Use pre-computed vote counts (much faster than recomputing from scratch).
-        # If the running counts map is empty despite having votes (e.g. all weights were zeroed
-        # and cleaned up), fall back to a fresh weighted sum from the raw deques.
         weighted_votes = self.track_vote_counts[track_id]
         if weighted_votes:
             best_name = max(weighted_votes, key=weighted_votes.__getitem__)
@@ -121,14 +121,11 @@ class TemporalConsensus:
         if not _is_unknown(final_name) and len(votes) < self._min_consensus_frames:
             final_name = "Unknown"
 
-        # Compute avg_confidence from the *best* known identity's votes,
-        # regardless of whether we've overridden to "Unknown" this frame.
         name_confidences = [confidences[i] for i, n in enumerate(votes) if n == best_name]
         avg_confidence = float(np.mean(name_confidences)) if name_confidences else 0.0
 
         avg_age = int(np.mean(ages)) if ages else 0
 
-        # Filter meaningless gender strings before counting
         valid_genders = [g for g in genders if g and g != "Unknown"]
         most_common_gender = Counter(valid_genders).most_common(1)[0][0] if valid_genders else ""
 
@@ -136,7 +133,7 @@ class TemporalConsensus:
 
         return final_name, avg_confidence, avg_age, most_common_gender, avg_quality
 
-    def clear_track(self, track_id: int):
+    def clear_track(self, track_id: TrackId):
         self.track_votes.pop(track_id, None)
         self.track_confidences.pop(track_id, None)
         self.track_ages.pop(track_id, None)

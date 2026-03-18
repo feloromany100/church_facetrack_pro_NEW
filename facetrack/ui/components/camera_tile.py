@@ -13,8 +13,10 @@ from facetrack.models.person import Detection
 from facetrack.ui.theme import C, F
 from facetrack.ui.overlay_renderer import draw_qt
 
+
 class _OverlayWidget(QWidget):
     """Transparent widget drawn on top of the video label."""
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -32,6 +34,18 @@ class _OverlayWidget(QWidget):
     def paintEvent(self, event):
         if not self._detections:
             return
+
+        # Read display settings from ConfigService at paint time (main thread — safe).
+        show_quality = True
+        show_track_id = True
+        try:
+            from facetrack.services.config_service import ConfigService
+            cfg = ConfigService().load()
+            show_quality = bool(getattr(cfg, "SHOW_QUALITY_SCORE", True))
+            show_track_id = bool(getattr(cfg, "SHOW_TRACK_ID", True))
+        except Exception:
+            pass
+
         p = QPainter(self)
         draw_qt(
             p,
@@ -39,8 +53,11 @@ class _OverlayWidget(QWidget):
             frame_size=(self._frame_w, self._frame_h),
             widget_size=(self.width(), self.height()),
             colors={"known": C.NEON_BLUE, "unknown": C.DANGER},
+            show_quality=show_quality,
+            show_track_id=show_track_id,
         )
         p.end()
+
 
 class CameraTile(QWidget):
     clicked = Signal(int)   # emits camera id on click

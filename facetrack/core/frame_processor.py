@@ -28,9 +28,8 @@ from collections import defaultdict, deque
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-# ── project root on path (removed once pyproject.toml / pip install -e . is used) ──
-
 EMBEDDING_DIM = 512  # default; overridden via injected cfg where applicable
+from facetrack.types import TrackId
 from facetrack.managers.temporal_consensus import TemporalConsensus
 from facetrack.managers.identity_lock import IdentityLock
 from facetrack.managers.unknown_manager import UnknownManager
@@ -115,7 +114,6 @@ def match_faces_to_persons(
     if _HAS_SCIPY:
         p_idx, f_idx = _lsa(-ioa)
     else:
-        # greedy: sort by ioa descending
         order = np.dstack(np.unravel_index(np.argsort(-ioa, axis=None), ioa.shape))[0]
         used_p, used_f = set(), set()
         p_idx, f_idx = [], []
@@ -164,6 +162,8 @@ class FrameProcessor:
         csv_path: str = "",
     ):
         self.cam_id = cam_id
+        # M-06 FIX: cfg is always a SimpleNamespace (the result of ConfigService().load()),
+        # never a ConfigService instance. The previous isinstance check was dead code.
         if cfg is None:
             cfg = ConfigService().load()
         self.cfg = cfg
@@ -197,7 +197,7 @@ class FrameProcessor:
         self._id_persistence = IdentityPersistence(persistence_time=5.0)
         self._track_confidence = TrackConfidence()
         self._unknown_manager: Optional[UnknownManager] = None
-        self._track_emb_history: Dict[str, Dict] = defaultdict(
+        self._track_emb_history: Dict[TrackId, Dict] = defaultdict(
             lambda: {"embeddings": deque(maxlen=10), "last_good": None}
         )
 
@@ -212,24 +212,22 @@ class FrameProcessor:
             for k in ("yolo", "face", "recog", "total")
         }
 
-        # Subscribe to live config updates (thread-safe inside ConfigService)
-        if isinstance(self.cfg, ConfigService) or hasattr(self.cfg, "subscribe"):
-            self._cfg_svc = self.cfg
-        else:
-            self._cfg_svc = ConfigService()
+        # M-06 FIX: Always create a real ConfigService instance for subscriptions.
+        # The previous code tried to use cfg as the service if it had a subscribe()
+        # method, but cfg is always a SimpleNamespace from load() — that branch
+        # never executed. Now we always subscribe via ConfigService().
+        self._cfg_svc = ConfigService()
         self._cfg_svc.subscribe(self._on_config_updated)
 
     def _on_config_updated(self, new_cfg: Any):
         """Callback fired by ConfigService when UI sliders change."""
         self.cfg = new_cfg
         try:
-            # Update temporal consensus
             if hasattr(self._consensus, "voting_window_size"):
                 self._consensus.voting_window_size = int(getattr(new_cfg, "VOTING_WINDOW_SIZE", 10))
             if hasattr(self._consensus, "min_consensus_frames"):
                 self._consensus.min_consensus_frames = int(getattr(new_cfg, "MIN_CONSENSUS_FRAMES", 1))
 
-            # Update identity lock
             if hasattr(self._id_lock, "lock_threshold"):
                 self._id_lock.lock_threshold = float(getattr(new_cfg, "IDENTITY_LOCK_THRESHOLD", 0.42))
             if hasattr(self._id_lock, "consensus_frames"):
@@ -237,7 +235,6 @@ class FrameProcessor:
             if hasattr(self._id_lock, "verify_sim"):
                 self._id_lock.verify_sim = float(getattr(new_cfg, "LOCK_EMBEDDING_VERIFY", 0.38))
 
-            # Update adaptive threshold
             if hasattr(self._adaptive_thresh, "base_similarity_threshold"):
                 self._adaptive_thresh.base_similarity_threshold = float(getattr(new_cfg, "BASE_SIMILARITY_THRESHOLD", 0.42))
             if hasattr(self._adaptive_thresh, "min_similarity_threshold"):
@@ -329,7 +326,14 @@ class FrameProcessor:
         return build_face_analysis_app(self.cfg, label=f"cam-{self.cam_id}")
 
     def cleanup(self):
-        """Release GPU memory."""
+        """Release GPU memory and remove config subscription."""
+        # C-03 FIX: Unsubscribe before releasing state so the callback is never
+        # fired against a half-destroyed processor after cleanup() returns.
+        try:
+            self._cfg_svc.unsubscribe(self._on_config_updated)
+        except Exception:
+            pass
+
         try:
             del self._app
         except Exception:
@@ -371,7 +375,6 @@ class FrameProcessor:
         if self._frame_count % 100 == 0:
             self._log_perf()
 
-        # Reset per-frame detection lists
         detections_data: List[Dict] = []
 
         # ── YOLO person detection + ByteTrack ──────────────────────────
@@ -501,10 +504,6 @@ class FrameProcessor:
         detected_faces: List[Dict],
         w: int, h: int,
     ) -> Tuple[List[Dict], set]:
-        """
-        For each valid YOLO person box, find its matched face (if any) and
-        build a flat detection_data list.  Returns (data_list, matched_face_indices).
-        """
         detections_data: List[Dict] = []
         matched_face_idx: set = set()
 
@@ -517,7 +516,6 @@ class FrameProcessor:
             for box in boxes
         ]
 
-        # Filter sub-boxes (a head bbox fully inside a body bbox)
         valid = self._filter_subboxes(person_boxes)
         filtered_boxes = [b for i, b in enumerate(boxes) if i in valid]
         filtered_pb   = [b for i, b in enumerate(person_boxes) if i in valid]
@@ -559,29 +557,21 @@ class FrameProcessor:
         return detections_data, matched_face_idx
 
     def _filter_subboxes(self, person_boxes: List[Tuple]) -> set:
-        """
-        Remove boxes that are heavily contained within a larger sibling box.
-
-        Vectorized with numpy: O(n) array operations replace the O(n²) nested
-        Python loop.  Result is identical to the original algorithm.
-        """
+        """Remove boxes that are heavily contained within a larger sibling box."""
         if len(person_boxes) < 2:
             return set(range(len(person_boxes)))
 
-        pb = np.array(person_boxes, dtype=np.float32)       # (N, 4) — x1 y1 x2 y2
+        pb = np.array(person_boxes, dtype=np.float32)
         areas = np.maximum(1.0, (pb[:, 2] - pb[:, 0]) * (pb[:, 3] - pb[:, 1]))
 
-        # Intersection corners — broadcast (N, 1) vs (1, N) → (N, N)
         ix1 = np.maximum(pb[:, 0, None], pb[None, :, 0])
         iy1 = np.maximum(pb[:, 1, None], pb[None, :, 1])
         ix2 = np.minimum(pb[:, 2, None], pb[None, :, 2])
         iy2 = np.minimum(pb[:, 3, None], pb[None, :, 3])
         inter = np.maximum(0.0, ix2 - ix1) * np.maximum(0.0, iy2 - iy1)
 
-        # ioa[i, j] = fraction of box-i's area covered by box-j's overlap
         ioa = inter / areas[:, None]
 
-        # Box i is a sub-box of j when >80% of i lies inside j AND j is at least as large
         contained = (ioa > 0.8) & (areas[:, None] <= areas[None, :])
         np.fill_diagonal(contained, False)
 
@@ -612,7 +602,7 @@ class FrameProcessor:
             l, t, bw, bh = clipped
             detections_data.append({
                 "bbox": (l, t, l + bw, t + bh),
-                "track_id": -2,   # sentinel — filtered out after matching
+                "track_id": -2,
                 "embedding": fd["embedding"], "age": fd["age"],
                 "gender": fd["gender"], "quality": fd["quality"],
                 "det_score": fd["det_score"], "face_crop": fd["face_crop"],
@@ -655,31 +645,22 @@ class FrameProcessor:
         I_map: Dict[int, int],
         frame_bgr: np.ndarray,
     ) -> Tuple[List[Dict], set]:
-        """
-        For each detection, run:
-          adaptive threshold → temporal consensus → identity lock →
-          identity persistence → unknown manager → CSV log
-
-        Returns (results_list, active_track_id_set).
-        """
         results: List[Dict] = []
         active_ids: set = set()
         now = time.time()
 
-        # Reset unknown session counter on time-window boundary
         if now - self._unknown_session_reset_time > float(getattr(self.cfg, "UNKNOWN_SESSION_WINDOW", 300)):
             self._unknown_session_count = 0
             self._unknown_session_reset_time = now
 
         for i, det in enumerate(detections_data):
-            track_id = str(det["track_id"])
+            track_id = TrackId(str(det["track_id"]))
             active_ids.add(track_id)
 
             name, score = "Unknown", 0.0
             age, gender = det["age"], det["gender"]
             current_emb = det.get("embedding")
 
-            # ── embedding history + FAISS match ────────────────────────
             if current_emb is not None:
                 hist = self._track_emb_history[track_id]
                 hist["embeddings"].append(current_emb)
@@ -706,11 +687,9 @@ class FrameProcessor:
                 iou_score=1.0,
             )
 
-            # ── consensus ──────────────────────────────────────────────
             final_name, final_score, final_age, final_gender, _ = \
                 self._consensus.get_consensus(track_id)
 
-            # ── identity lock ───────────────────────────────────────────
             self._id_lock.try_lock(
                 track_id, final_name, final_score,
                 final_age, final_gender, embedding=current_emb
@@ -719,7 +698,6 @@ class FrameProcessor:
             if locked:
                 final_name, final_score, final_age, final_gender = locked
 
-            # ── identity persistence ────────────────────────────────────
             if final_name != "Unknown":
                 self._id_persistence.update(track_id, final_name, final_score, now)
             else:
@@ -729,12 +707,9 @@ class FrameProcessor:
                 if p_name and p_score > float(getattr(self.cfg, "PERSISTENCE_RECOVERY_THRESHOLD", 0.35)):
                     final_name, final_score = p_name, p_score
 
-            # ── unknown handling ────────────────────────────────────────
             final_name = self._handle_unknown(
                 det, track_id, current_emb, final_name, now
             )
-
-            # Persistence is handled outside FrameProcessor (service/data layers).
 
             confidence_score = self._track_confidence.get_confidence(track_id)
             _, _, _, _, avg_quality = self._consensus.get_consensus(track_id)
@@ -755,7 +730,7 @@ class FrameProcessor:
     def _handle_unknown(
         self,
         det: Dict,
-        track_id: str,
+        track_id: TrackId,
         current_emb: Optional[np.ndarray],
         final_name: str,
         now: float,

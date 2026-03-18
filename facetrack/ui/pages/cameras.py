@@ -12,8 +12,10 @@ from facetrack.ui.theme import C, F, Pane
 from facetrack.ui.components.camera_tile import CameraTile
 from facetrack.models.camera import CameraState
 
+
 class _ExpandedDialog(QDialog):
     """Full-screen single camera view."""
+
     def __init__(self, tile: CameraTile, parent=None):
         super().__init__(parent, Qt.WindowType.FramelessWindowHint)
         self.setStyleSheet(f"background: {C.BG_BASE};")
@@ -38,16 +40,16 @@ class _ExpandedDialog(QDialog):
         bar_l.addWidget(close_btn)
         layout.addWidget(bar)
 
-        # Expanded tile (reuse same widget)
+        # Expanded tile (independent widget — shares state but not identity)
         self._big_tile = CameraTile(tile.state)
         layout.addWidget(self._big_tile)
-        self._source_tile = tile
 
     def update_frame(self, qimg: QImage):
         self._big_tile.update_frame(qimg)
 
     def update_detections(self, dets: list):
         self._big_tile.update_detections(dets)
+
 
 class CamerasPage(Pane):
     def __init__(self, parent=None):
@@ -98,10 +100,10 @@ class CamerasPage(Pane):
         tile.clicked.connect(self._on_tile_clicked)
         self._tiles[state.config.id] = tile
         self._relayout()
-        self._cam_count_lbl.setText(f"{len(self._tiles)} camera{'s' if len(self._tiles) != 1 else ''} active")
+        n = len(self._tiles)
+        self._cam_count_lbl.setText(f"{n} camera{'s' if n != 1 else ''} active")
 
     def _relayout(self):
-        # Clear grid
         while self._grid.count():
             item = self._grid.takeAt(0)
             if item.widget():

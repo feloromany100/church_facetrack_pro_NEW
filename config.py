@@ -29,9 +29,6 @@ BASE_SIMILARITY_THRESHOLD = 0.42
 MIN_SIMILARITY_THRESHOLD = 0.35   # Minimum threshold (lenient for clear faces)
 MAX_SIMILARITY_THRESHOLD = 0.60   # Maximum threshold
 
-# Marginal threshold to prevent enrolled personnel at bad angles from being saved as new unknown strangers
-MARGINAL_SIMILARITY_THRESHOLD = 0.38
-
 # ================= QUALITY THRESHOLDS =================
 # Relaxed for easier recognition (smaller faces, more angle, some blur OK)
 FACE_MIN_SIZE = 40              # Minimum face size (allow more distant faces)
@@ -42,8 +39,6 @@ FACE_ANGLE_THRESHOLD = 60.0     # Maximum face angle in degrees (more lenient)
 VOTING_WINDOW_SIZE = 10         # Frames to consider for voting
 CONFIDENCE_DECAY = 0.90         # Decay factor for old votes
 MIN_CONSENSUS_FRAMES = 1        # Show name after 1 vote (was 2; every-frame detection gives quick consensus)
-# Bounding box smoothing (0-1, higher = less smoothing, more responsive to fast movement)
-BBOX_SMOOTHING_ALPHA = 1.0
 
 # ================= TRACKING SETTINGS =================
 COOLDOWN_SECONDS = 300          # Seconds between attendance logs (5 minutes)
@@ -54,9 +49,8 @@ PERSISTENCE_RECOVERY_THRESHOLD = 0.35  # Min score to recover identity from hist
 
 # ================= TRACKING SETTINGS =================
 TRACKER_MAX_AGE = 45            # Frames before track expires (higher = less flicker)
-MIN_IOU_THRESHOLD = 0.20       # Minimum IoU for detection-to-track association (display/recognition)
-# Note: For DeepSort legacy, MIN_BBOX_PIXELS was used. ByteTrack handles minimum boxes internally.
-MIN_BBOX_PIXELS = 8            # Reject detections smaller than this (avoids degenerate state)
+MIN_IOU_THRESHOLD = 0.20        # Minimum IoU for detection-to-track association (display/recognition)
+MIN_BBOX_PIXELS = 8             # Reject detections smaller than this (avoids degenerate state)
 
 # ================= IDENTITY LOCK =================
 # Higher threshold + embedding check = prevents wrong person (e.g. friend labeled as you)

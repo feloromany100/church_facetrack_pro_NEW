@@ -4,13 +4,16 @@ Track confidence scoring — combines detection quality signals into a per-track
 
 from typing import Dict
 
+from facetrack.types import TrackId
+
+
 class TrackConfidence:
     """Smoothed confidence score aggregating face quality, track age, and IoU signal."""
 
     def __init__(self):
-        self.track_scores: Dict[int, float] = {}
+        self.track_scores: Dict[TrackId, float] = {}
 
-    def update(self, track_id: int, has_face: bool, face_quality: float,
+    def update(self, track_id: TrackId, has_face: bool, face_quality: float,
                track_age: int, iou_score: float):
         """
         Update confidence score for a track.
@@ -40,10 +43,10 @@ class TrackConfidence:
         prev = self.track_scores.get(track_id, raw)
         self.track_scores[track_id] = 0.7 * prev + 0.3 * raw
 
-    def get_confidence(self, track_id: int) -> float:
+    def get_confidence(self, track_id: TrackId) -> float:
         """Return the current confidence score (default 0.5 for unseen tracks)."""
         return self.track_scores.get(track_id, 0.5)
 
-    def clear_track(self, track_id: int):
+    def clear_track(self, track_id: TrackId):
         """Remove track from scoring."""
         self.track_scores.pop(track_id, None)

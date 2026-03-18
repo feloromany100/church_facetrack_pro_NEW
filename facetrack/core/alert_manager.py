@@ -3,6 +3,7 @@ Alert manager — collects unknown-face alerts and system events.
 Emits via a simple callback list (UI registers listeners).
 """
 import uuid
+import threading
 from datetime import datetime
 from typing import List, Callable
 
@@ -12,9 +13,19 @@ class AlertManager:
     def __init__(self):
         self._alerts: List[Alert] = []
         self._listeners: List[Callable[[Alert], None]] = []
+        self._lock = threading.Lock()
 
     def subscribe(self, fn: Callable[[Alert], None]):
-        self._listeners.append(fn)
+        with self._lock:
+            if fn not in self._listeners:
+                self._listeners.append(fn)
+
+    def unsubscribe(self, fn: Callable[[Alert], None]):
+        with self._lock:
+            try:
+                self._listeners.remove(fn)
+            except ValueError:
+                pass
 
     def push(self, title: str, message: str,
              severity: AlertSeverity = AlertSeverity.WARNING,
@@ -31,8 +42,12 @@ class AlertManager:
             face_snapshot_path=face_snapshot_path,
             seen_count=seen_count,
         )
-        self._alerts.append(alert)
-        for fn in self._listeners:
+        with self._lock:
+            self._alerts.append(alert)
+            listeners_copy = list(self._listeners)
+
+        # Fire callbacks outside the lock to prevent deadlocks
+        for fn in listeners_copy:
             try:
                 fn(alert)
             except Exception:
@@ -40,12 +55,16 @@ class AlertManager:
         return alert
 
     def get_all(self) -> List[Alert]:
-        return list(reversed(self._alerts))
+        with self._lock:
+            return list(reversed(self._alerts))
 
     def get_unread_count(self) -> int:
-        return sum(1 for a in self._alerts if not a.dismissed)
+        with self._lock:
+            return sum(1 for a in self._alerts if not a.dismissed)
 
     def dismiss(self, alert_id: str):
-        for a in self._alerts:
-            if a.id == alert_id:
-                a.dismissed = True
+        with self._lock:
+            for a in self._alerts:
+                if a.id == alert_id:
+                    a.dismissed = True
+                    break

@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
 """
-Enterprise Face Recognition & Tracking System - Main Entry Point
-Modular architecture for better maintainability
+Enterprise Face Recognition & Tracking System - Headless Entry Point
+OpenCV mosaic mode — no PySide6 UI required.
 """
 
 import os
 import sys
 
-# Ensure the project root is in the Python path regardless of how the script is run
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-# Avoid MKL duplicate lib errors when using ONNX/NumPy together
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 import cv2
@@ -23,17 +20,11 @@ from multiprocessing import Process, Queue, Value
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
-# Central config (loaded once)
 from facetrack.services.config_service import ConfigService
 CFG = ConfigService().load()
 
-# Import utilities
 from facetrack.storage.session_manager import create_session
-
-# Central logging setup
 from facetrack.infra.logging import setup_logging
-
-# Import processes
 from headless.processes.video_capture import video_process
 from headless.processes.inference import inference_process
 from facetrack.ui.overlay_renderer import draw_cv2
@@ -41,28 +32,37 @@ from facetrack.ui.overlay_renderer import draw_cv2
 setup_logging()
 logger = logging.getLogger(__name__)
 
+
 def validate_config():
     """Validate configuration parameters."""
     errors = []
 
-    if not 0.0 <= float(getattr(CFG, "BBOX_SMOOTHING_ALPHA", 1.0)) <= 1.0:
-        errors.append(f"BBOX_SMOOTHING_ALPHA must be between 0 and 1, got {getattr(CFG, 'BBOX_SMOOTHING_ALPHA', None)}")
-    
     if float(CFG.MIN_SIMILARITY_THRESHOLD) > float(CFG.BASE_SIMILARITY_THRESHOLD):
-        errors.append(f"MIN_SIMILARITY_THRESHOLD ({CFG.MIN_SIMILARITY_THRESHOLD}) cannot be greater than BASE_SIMILARITY_THRESHOLD ({CFG.BASE_SIMILARITY_THRESHOLD})")
-    
+        errors.append(
+            f"MIN_SIMILARITY_THRESHOLD ({CFG.MIN_SIMILARITY_THRESHOLD}) cannot be "
+            f"greater than BASE_SIMILARITY_THRESHOLD ({CFG.BASE_SIMILARITY_THRESHOLD})"
+        )
+
     if float(CFG.BASE_SIMILARITY_THRESHOLD) > float(CFG.MAX_SIMILARITY_THRESHOLD):
-        errors.append(f"BASE_SIMILARITY_THRESHOLD ({CFG.BASE_SIMILARITY_THRESHOLD}) cannot be greater than MAX_SIMILARITY_THRESHOLD ({CFG.MAX_SIMILARITY_THRESHOLD})")
-    
+        errors.append(
+            f"BASE_SIMILARITY_THRESHOLD ({CFG.BASE_SIMILARITY_THRESHOLD}) cannot be "
+            f"greater than MAX_SIMILARITY_THRESHOLD ({CFG.MAX_SIMILARITY_THRESHOLD})"
+        )
+
     if int(CFG.FACE_MIN_SIZE) < 20:
-        errors.append(f"FACE_MIN_SIZE too small ({CFG.FACE_MIN_SIZE}), minimum recommended is 20")
-    
+        errors.append(
+            f"FACE_MIN_SIZE too small ({CFG.FACE_MIN_SIZE}), minimum recommended is 20"
+        )
+
     if not CFG.CAMERA_SOURCES:
         errors.append("CAMERA_SOURCES is empty, at least one camera source is required")
-    
+
     if len(CFG.CAMERA_SOURCES) > 4:
-        logger.warning(f"⚠️ More than 4 cameras configured ({len(CFG.CAMERA_SOURCES)}), only first 4 will be used")
-    
+        logger.warning(
+            f"⚠️ More than 4 cameras configured ({len(CFG.CAMERA_SOURCES)}), "
+            "only first 4 will be used"
+        )
+
     if errors:
         for error in errors:
             logger.error(f"❌ Configuration Error: {error}")
@@ -72,23 +72,21 @@ def validate_config():
 
     logger.info("✅ Configuration validated successfully")
 
+
 def build_grid(
     frames: dict,
     width: int = None,
     height: int = None,
 ) -> np.ndarray:
-    """Stitch per-camera frames into a 1x1 / 1x2 / 2x2 mosaic.
-
-    Expects frames with keys 0..N-1 for N cameras; missing keys render as black.
-    """
+    """Stitch per-camera frames into a 1x1 / 1x2 / 2x2 mosaic."""
     width = width if width is not None else CFG.DISPLAY_GRID_WIDTH
     height = height if height is not None else CFG.DISPLAY_GRID_HEIGHT
     num_cameras = len(frames)
     grid = np.zeros((height, width, 3), dtype=np.uint8)
-    
+
     if not frames:
         return grid
-    
+
     if num_cameras == 1:
         if 0 in frames:
             return cv2.resize(frames[0], (width, height))
@@ -109,8 +107,7 @@ def build_grid(
 
 
 def main():
-    """Main entry point. Use Ctrl+C for graceful shutdown (flushes CSV, closes windows)."""
-    # Validate configuration
+    """Main entry point. Use Ctrl+C for graceful shutdown."""
     validate_config()
 
     try:
@@ -128,6 +125,10 @@ def main():
         )
         logger.warning("⚠️ System will run in detection-only mode until faces are enrolled.")
 
+    # Read display flags once at startup (headless mode doesn't hot-reload)
+    show_quality = bool(getattr(CFG, "SHOW_QUALITY_SCORE", True))
+    show_track_id = bool(getattr(CFG, "SHOW_TRACK_ID", True))
+
     num_cameras = min(4, len(CFG.CAMERA_SOURCES))
     frame_queue = Queue(maxsize=int(CFG.FRAME_QUEUE_SIZE))
     result_queue = Queue(maxsize=int(CFG.RESULT_QUEUE_SIZE))
@@ -142,7 +143,8 @@ def main():
     # Start video capture processes
     video_processes = []
     for idx, source in enumerate(CFG.CAMERA_SOURCES[:4]):
-        p = Process(target=video_process, args=(idx, source, frame_queue, display_queue, stop_flag))
+        p = Process(target=video_process,
+                    args=(idx, source, frame_queue, display_queue, stop_flag))
         p.daemon = True
         p.start()
         video_processes.append(p)
@@ -167,32 +169,23 @@ def main():
 
     live_frames = {}
     overlay_results = {}
-    
-    # Performance monitoring
+
     fps_counter = 0
     fps_start_time = time.time()
     current_fps = 0.0
-    
-    # Track whether inference has produced its first output frame yet
     inference_active = False
-    
+
     try:
         while True:
-            loop_start = time.time()
-            
-            # Get latest results AND the exact frame they were inferenced on
             try:
                 while True:
                     cam_idx, inferenced_frame, results = result_queue.get_nowait()
-                    live_frames[cam_idx] = inferenced_frame  # Zero-lag sync
+                    live_frames[cam_idx] = inferenced_frame
                     overlay_results[cam_idx] = results
                     inference_active = True
             except queue.Empty:
                 pass
 
-            # Drain display queue so it doesn't block. 
-            # If inference is active, we just drop these frames (relying entirely on inferenced_frame).
-            # If inference is NOT active (e.g. during warmup), we display these live raw frames.
             try:
                 while True:
                     cam_idx, raw_frame = display_queue.get_nowait()
@@ -201,7 +194,6 @@ def main():
             except queue.Empty:
                 pass
 
-            # Show placeholder if no frames yet
             if not live_frames:
                 placeholder = np.zeros((480, 640, 3), dtype=np.uint8)
                 label = "Initializing models..." if p_inference.is_alive() else "Waiting for frames..."
@@ -212,7 +204,6 @@ def main():
                     break
                 continue
 
-            # Build annotated frames
             annotated_frames = {}
             total_tracks = 0
 
@@ -221,23 +212,26 @@ def main():
                 res_list = overlay_results.get(cam_idx, [])
                 total_tracks += len(res_list)
 
-                f_draw = draw_cv2(f_draw, res_list)
+                f_draw = draw_cv2(f_draw, res_list,
+                                  show_quality=show_quality,
+                                  show_track_id=show_track_id)
 
                 cv2.putText(f_draw, f"CAM {cam_idx}", (10, 30),
                             cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
                 annotated_frames[cam_idx] = f_draw
 
-            # Calculate FPS
             fps_counter += 1
             if time.time() - fps_start_time >= 1.0:
                 current_fps = fps_counter / (time.time() - fps_start_time)
                 fps_counter = 0
                 fps_start_time = time.time()
 
-            # Stitch grid and render
             mosaic = build_grid(annotated_frames)
             fps_str = f"{current_fps:.1f}" if current_fps > 0 else "—"
-            status_text = f"Tracks: {total_tracks} | FPS: {fps_str} | Session: {os.path.basename(SESSION_FOLDER)}"
+            status_text = (
+                f"Tracks: {total_tracks} | FPS: {fps_str} | "
+                f"Session: {os.path.basename(SESSION_FOLDER)}"
+            )
             cv2.putText(mosaic, status_text, (10, mosaic.shape[0] - 20),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
@@ -270,6 +264,7 @@ def main():
 
         cv2.destroyAllWindows()
         logger.info(f"✅ Session data saved to: {SESSION_FOLDER}")
+
 
 if __name__ == "__main__":
     main()

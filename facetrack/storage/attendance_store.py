@@ -1,7 +1,7 @@
 """
 Attendance data store.
-Wraps an in-memory list + writes to the real session CSV (v5 format).
-Swap the in-memory list for SQLite with zero UI changes.
+Wraps an in-memory list + writes to the real session SQLite DB.
+Swap the in-memory list for a full query layer with zero UI changes.
 """
 import time
 import uuid
@@ -17,20 +17,29 @@ from facetrack.data.attendance_repository import AttendanceRepository
 
 logger = logging.getLogger("AttendanceStore")
 
-# Ensure project root on path for v5 imports
 
 class AttendanceStore:
+    """
+    In-memory + SQLite attendance store.
+
+    Use as a context manager or call close() explicitly when done.
+    The store must be closed to flush the background writer thread.
+
+        with AttendanceStore(db_path) as store:
+            store.log(...)
+    """
+
     def __init__(self, csv_path: Optional[str] = None, seed_dummy: bool = False):
         """
-        csv_path:   path to the session CSV file created by src/utils/session_manager.
-                    If None, a new session is created automatically.
+        csv_path:   path used to derive the SQLite database path.
+                    If None, defaults to "attendance.db".
         seed_dummy: if True, populate store with synthetic records for UI development.
                     NEVER set this to True in production — it creates fabricated
-                    attendance history.  Default: False.  (M-08 FIX)
+                    attendance history.  Default: False.
         """
         self._records: List[AttendanceRecord] = []
         self._lock = threading.Lock()  # guards _records and _last_logged
-        
+
         # Initialize SQLite Repository
         if not csv_path:
             csv_path = "attendance.db"
@@ -50,9 +59,16 @@ class AttendanceStore:
         # Restore historical records from the SQLite database on startup
         self._load_from_db()
 
-        # M-08 FIX: only seed synthetic data when explicitly requested
         if seed_dummy:
             self._seed_dummy_data()
+
+    # ── Context manager ───────────────────────────────────────────────────────
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
     # ── Write ─────────────────────────────────────────────────────────────────
     def set_cooldown(self, seconds: float):
         """Update the per-person cooldown at runtime (called from Settings)."""
@@ -65,7 +81,6 @@ class AttendanceStore:
             is_unknown: bool = False) -> Optional[AttendanceRecord]:
         now = time.time()
         with self._lock:
-            # Cooldown check — skip if this person was logged recently
             last = self._last_logged.get(person_name, 0.0)
             if now - last < self._cooldown:
                 return None
@@ -129,33 +144,13 @@ class AttendanceStore:
     # ── Cleanup ───────────────────────────────────────────────────────────────
     def close(self):
         """Gracefully shutdown the background writer thread."""
-        if hasattr(self, '_repository') and self._repository:
+        if hasattr(self, "_repository") and self._repository:
             self._repository.close()
-
-    def __del__(self):
-        try:
-            if (
-                hasattr(self, "_repository")
-                and self._repository is not None
-                and hasattr(self._repository, "_worker_thread")
-                and self._repository._worker_thread.is_alive()
-            ):
-                logger.warning(
-                    "AttendanceStore was garbage-collected without calling close() — "
-                    "flushing background writer now."
-                )
-                self.close()
-        except Exception:
-            pass  # Never raise from __del__
 
     # ── DB restore ────────────────────────────────────────────────────────────────
     def _load_from_db(self):
         """
         Populate the in-memory record list from SQLite on startup.
-
-        This makes all read methods (get_all, get_today, weekly_counts, search)
-        work correctly after a process restart.  The cooldown map is also
-        restored so recently-seen persons are not immediately re-logged.
         """
         if not hasattr(self, "_repository") or self._repository is None:
             return
@@ -183,8 +178,6 @@ class AttendanceStore:
                             is_unknown=bool(row[8]),
                         )
                         self._records.append(rec)
-                        # Restore cooldown state so recently-logged persons are
-                        # not immediately re-logged after a restart
                         self._last_logged[rec.person_name] = rec.timestamp.timestamp()
                     except Exception:
                         pass  # Corrupt row — skip it
