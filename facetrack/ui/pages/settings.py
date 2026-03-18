@@ -303,7 +303,7 @@ class SettingsPage(Pane):
         self._wire_live_config()
 
     def _wire_live_config(self):
-        \"\"\"Connect UI signals to the ConfigService hot reload.\"\"\"
+        """Connect UI signals to the ConfigService hot reload."""
         self.threshold_changed.connect(lambda v: self._push_config("BASE_SIMILARITY_THRESHOLD", v))
         self.min_threshold_changed.connect(lambda v: self._push_config("MIN_SIMILARITY_THRESHOLD", v))
         self.max_threshold_changed.connect(lambda v: self._push_config("MAX_SIMILARITY_THRESHOLD", v))
