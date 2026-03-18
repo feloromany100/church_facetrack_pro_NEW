@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt, QTimer
 
 from facetrack.ui.theme import C, F, Pane
 from facetrack.ui.components.data_table import DataTable
-from facetrack.core.attendance_store import AttendanceStore
+from facetrack.storage.attendance_store import AttendanceStore
 
 COLUMNS = ["Name", "Timestamp", "Camera", "Confidence", "Group", "Status"]
 

@@ -10,8 +10,10 @@ import threading
 from datetime import datetime, timedelta
 from typing import List, Optional
 import random
+import os
 
 from facetrack.models.person import AttendanceRecord, PersonGroup
+from facetrack.data.attendance_repository import AttendanceRepository
 
 logger = logging.getLogger("AttendanceStore")
 
@@ -28,6 +30,12 @@ class AttendanceStore:
         """
         self._records: List[AttendanceRecord] = []
         self._lock = threading.Lock()  # guards _records and _last_logged
+        
+        # Initialize SQLite Repository
+        if not csv_path:
+            csv_path = "attendance.db"
+        db_path = csv_path.replace(".csv", ".db")
+        self._repository = AttendanceRepository(db_path)
 
         # Per-person cooldown: name → last logged timestamp
         self._last_logged: dict = {}
@@ -72,6 +80,7 @@ class AttendanceStore:
                 is_unknown=is_unknown,
             )
             self._records.append(rec)
+            self._repository.save(rec)
 
         return rec
 
@@ -116,8 +125,9 @@ class AttendanceStore:
 
     # ── Cleanup ───────────────────────────────────────────────────────────────
     def close(self):
-        """Kept for API compatibility; no external resources to flush."""
-        return None
+        """Gracefully shutdown the background writer thread."""
+        if hasattr(self, '_repository') and self._repository:
+            self._repository.close()
 
     def __del__(self):
         self.close()

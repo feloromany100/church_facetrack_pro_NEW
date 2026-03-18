@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QPainter, QColor, QFont, QPen, QBrush
 
 from facetrack.ui.theme import C, F, Card, Pane
-from facetrack.core.attendance_store import AttendanceStore
+from facetrack.storage.attendance_store import AttendanceStore
 from facetrack.models.person import PersonGroup
 
 class _PieChart(QWidget):

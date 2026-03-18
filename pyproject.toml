@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "facetrack"
+version = "2.0.0"
+requires-python = ">=3.8"
+description = "Church FaceTrack Pro — real-time multi-camera face recognition"
+dependencies = [
+    "PySide6>=6.5",
+    "opencv-python>=4.8",
+    "numpy>=1.24",
+    "faiss-cpu>=1.7",
+    "insightface>=0.7",
+    "ultralytics>=8.0",
+    "av>=11.0",
+    "psutil>=5.9",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["facetrack*", "headless*"]
+
+# After running this script:
+#   pip install -e .
+# Then run with:
+#   python -m facetrack            # PySide6 UI
+#   python -m facetrack --headless # OpenCV mode

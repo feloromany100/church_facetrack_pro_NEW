@@ -14,7 +14,7 @@ Both of those are gone — this file is now pure Qt plumbing.
 import logging
 import numpy as np
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Signal, QThread
 from PySide6.QtGui import QImage
 
 from facetrack.core.video_capture import FrameCapture
@@ -49,11 +49,19 @@ class CameraWorker(QObject):
         unknowns_dir: str = "",
         csv_path: str = "",
         detect_every_n: int = 3,
+        cfg=None,
+        shared_face_app=None,
+        shared_faiss_index=None,
+        shared_faiss_labels=None,
     ):
         super().__init__()
         self.config = config
         self._detect_every_n = detect_every_n
         self._active = False
+        
+        self._shared_face_app = shared_face_app
+        self._shared_faiss_index = shared_faiss_index
+        self._shared_faiss_labels = shared_faiss_labels || []
 
         # Core objects — created in start_capture (worker thread)
         self._capture: FrameCapture = None
@@ -63,6 +71,10 @@ class CameraWorker(QObject):
         self._session_folder = session_folder
         self._unknowns_dir = unknowns_dir
         self._csv_path = csv_path
+        if cfg is None:
+            from facetrack.services.config_service import ConfigService
+            cfg = ConfigService().load()
+        self._cfg = cfg
 
     # ------------------------------------------------------------------ #
     # Lifecycle (called from QThread)                                      #
@@ -79,11 +91,16 @@ class CameraWorker(QObject):
         # Initialise the shared FrameProcessor
         self._processor = FrameProcessor(
             cam_id=cam_id,
+            cfg=self._cfg,
             session_folder=self._session_folder,
             unknowns_dir=self._unknowns_dir,
             csv_path=self._csv_path,
         )
-        ok = self._processor.initialize()
+        ok = self._processor.initialize(
+            shared_face_app=self._shared_face_app,
+            shared_faiss_index=self._shared_faiss_index,
+            shared_faiss_labels=self._shared_faiss_labels,
+        )
         if not ok:
             msg = f"FrameProcessor init failed for cam {cam_id}"
             logger.error(msg)
@@ -137,6 +154,9 @@ class CameraWorker(QObject):
                 if frame_count % n == 0:
                     detections = self._processor.process(frame_bgr)
                     self.detection_ready.emit(cam_id, detections)
+
+                # Yield control to the Qt event loop so signals can be processed
+                QThread.msleep(1)
 
         except Exception as e:
             logger.error("CameraWorker loop error cam %d: %s", cam_id, e)

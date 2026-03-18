@@ -27,6 +27,7 @@ from facetrack.models.camera import CameraConfig, CameraState, CameraStatus
 from facetrack.models.alert import AlertSeverity
 from facetrack.workers.camera_worker import CameraWorker
 from facetrack.workers.stats_worker import StatsWorker
+from facetrack.services.indexing_service import IndexingService
 
 logger = logging.getLogger("MainWindow")
 
@@ -84,6 +85,13 @@ class MainWindow(QMainWindow):
         self._unknown_alert_last: dict = {}
         self._unknown_alert_cooldown: float = 30.0  # seconds between unknown alerts per camera
 
+        # Background loaded models
+        self._shared_face_app = None
+        self._shared_faiss_index = None
+        self._shared_faiss_labels = []
+        self._models_ready = False
+        self._pending_cameras: list[CameraConfig] = []
+
         # ── Workers ───────────────────────────────────────────────────────────
         self._cam_workers: dict[int, tuple] = {}   # id → (worker, thread)
         self._stats_worker = StatsWorker()
@@ -97,7 +105,11 @@ class MainWindow(QMainWindow):
         # ── Wire alert manager → UI ───────────────────────────────────────────
         self._alerts.subscribe(self._on_new_alert)
 
-        # ── Start cameras ─────────────────────────────────────────────────────
+        # ── Start Async Indexing ──────────────────────────────────────────────
+        self._indexer = IndexingService()
+        self._indexer.start_indexing(self._on_indexing_finished, self._on_indexing_error)
+
+        # ── Queue cameras to start ────────────────────────────────────────────
         for cfg in self._default_cameras:
             self._start_camera(cfg)
 
@@ -173,6 +185,15 @@ class MainWindow(QMainWindow):
     def _start_camera(self, cfg: CameraConfig):
         if cfg.id in self._cam_workers:
             return
+            
+        # Defer launch until models are fully loaded in background
+        if not self._models_ready:
+            self._pending_cameras.append(cfg)
+            state = CameraState(config=cfg)
+            self._cameras_page.add_camera(state)
+            self._cameras_page.update_status(cfg.id, "Wait Init...")
+            return
+            
         state = CameraState(config=cfg)
         self._cameras_page.add_camera(state)
         count = len(self._cam_workers) + 1
@@ -194,6 +215,9 @@ class MainWindow(QMainWindow):
             unknowns_dir=unknowns_dir,
             csv_path=csv_path,
             cfg=self._cfg,
+            shared_face_app=self._shared_face_app,
+            shared_faiss_index=self._shared_faiss_index,
+            shared_faiss_labels=self._shared_faiss_labels,
         )
         thread = QThread(self)
 
@@ -227,6 +251,29 @@ class MainWindow(QMainWindow):
         self._settings_page.notify_camera_stopped(cam_id)
 
     # ── Slots ─────────────────────────────────────────────────────────────────
+    @Slot(object, list, object)
+    def _on_indexing_finished(self, index, labels, face_app):
+        logger.info("Background indexing finished. Releasing pending cameras.")
+        self._shared_faiss_index = index
+        self._shared_faiss_labels = labels
+        self._shared_face_app = face_app
+        self._models_ready = True
+        
+        # Start any cameras that users tried to launch while indexing
+        for cfg in self._pending_cameras:
+            self._start_camera(cfg)
+        self._pending_cameras.clear()
+
+    @Slot(str)
+    def _on_indexing_error(self, err_msg):
+        logger.error(f"Background indexing failed: {err_msg}")
+        show_toast("Init Error", f"FAISS DB Failed to load: {err_msg}", AlertSeverity.DANGER, self)
+        # Even if indexing fails, let cameras start (YOLO will still work)
+        self._models_ready = True
+        for cfg in self._pending_cameras:
+            self._start_camera(cfg)
+        self._pending_cameras.clear()
+
     @Slot(dict)
     def _on_stats(self, stats: dict):
         self._top_bar.update_stats(stats)

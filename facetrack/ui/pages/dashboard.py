@@ -9,7 +9,7 @@ from PySide6.QtGui import QPainter, QColor, QPen, QLinearGradient, QBrush, QFont
 
 from facetrack.ui.theme import C, F, Card, Pane
 from facetrack.ui.components.stat_card import StatCard
-from facetrack.core.attendance_store import AttendanceStore
+from facetrack.storage.attendance_store import AttendanceStore
 
 class _WeeklyChart(QWidget):
     def __init__(self, parent=None):

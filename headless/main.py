@@ -6,6 +6,10 @@ Modular architecture for better maintainability
 
 import os
 import sys
+
+# Ensure the project root is in the Python path regardless of how the script is run
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 # Avoid MKL duplicate lib errors when using ONNX/NumPy together
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 

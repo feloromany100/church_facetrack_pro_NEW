@@ -10,6 +10,9 @@ import os
 import sys
 import argparse
 
+# Ensure the project root is in the Python path regardless of how the script is run
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 def main():

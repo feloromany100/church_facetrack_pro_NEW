@@ -300,6 +300,30 @@ class SettingsPage(Pane):
         self._scanner = None
         self._load_config()
         self._build()
+        self._wire_live_config()
+
+    def _wire_live_config(self):
+        \"\"\"Connect UI signals to the ConfigService hot reload.\"\"\"
+        self.threshold_changed.connect(lambda v: self._push_config("BASE_SIMILARITY_THRESHOLD", v))
+        self.min_threshold_changed.connect(lambda v: self._push_config("MIN_SIMILARITY_THRESHOLD", v))
+        self.max_threshold_changed.connect(lambda v: self._push_config("MAX_SIMILARITY_THRESHOLD", v))
+        self.face_min_size_changed.connect(lambda v: self._push_config("FACE_MIN_SIZE", v))
+        self.blur_threshold_changed.connect(lambda v: self._push_config("FACE_BLUR_THRESHOLD", v))
+        self.angle_threshold_changed.connect(lambda v: self._push_config("FACE_ANGLE_THRESHOLD", v))
+        self.consensus_frames_changed.connect(lambda v: self._push_config("MIN_CONSENSUS_FRAMES", v))
+        self.lock_threshold_changed.connect(lambda v: self._push_config("IDENTITY_LOCK_THRESHOLD", v))
+        self.lock_verify_changed.connect(lambda v: self._push_config("LOCK_EMBEDDING_VERIFY", v))
+        
+        self.cooldown_changed.connect(lambda v: self._push_config("COOLDOWN_SECONDS", v))
+        self.unknown_cooldown_changed.connect(lambda v: self._push_config("UNKNOWN_COOLDOWN", v))
+        self.session_limit_changed.connect(lambda v: self._push_config("UNKNOWN_SESSION_LIMIT", v))
+        self.persistence_thresh_changed.connect(lambda v: self._push_config("PERSISTENCE_RECOVERY_THRESHOLD", v))
+        
+        self.yolo_conf_changed.connect(lambda v: self._push_config("PERSON_CONF_THRESHOLD", v))
+        self.detection_size_changed.connect(lambda v: self._push_config("DETECTION_SIZE", (v, v)))
+        
+        self.show_quality_changed.connect(lambda v: self._push_config("SHOW_QUALITY_SCORE", v))
+        self.show_track_id_changed.connect(lambda v: self._push_config("SHOW_TRACK_ID", v))
 
     def _load_config(self):
         try:
@@ -603,6 +627,11 @@ class SettingsPage(Pane):
         self._cam_cards[cfg.id] = card
         if running:
             self._running_ids.add(cfg.id)
+
+    # ── Config syncing ────────────────────────────────────────────────────────
+    def _push_config(self, key: str, value):
+        from facetrack.services.config_service import ConfigService
+        ConfigService().update_config({key: value})
 
     def notify_camera_started(self, cam_id: int):
         self._running_ids.add(cam_id)

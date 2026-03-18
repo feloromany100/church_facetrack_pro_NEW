@@ -74,7 +74,11 @@ def inference_process(
             try:
                 result_queue.put_nowait((cam_id, frame, results))
             except queue.Full:
-                pass  # display queue full — drop this result, inference continues
+                try:
+                    result_queue.get_nowait()
+                    result_queue.put_nowait((cam_id, frame, results))
+                except queue.Empty:
+                    pass
 
     finally:
         for proc in processors.values():

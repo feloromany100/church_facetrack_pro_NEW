@@ -211,35 +211,76 @@ class FrameProcessor:
             for k in ("yolo", "face", "recog", "total")
         }
 
+        # Subscribe to live config updates (thread-safe inside ConfigService)
+        if isinstance(self.cfg, ConfigService) or hasattr(self.cfg, "subscribe"):
+            self._cfg_svc = self.cfg
+        else:
+            self._cfg_svc = ConfigService()
+        self._cfg_svc.subscribe(self._on_config_updated)
+
+    def _on_config_updated(self, new_cfg: Any):
+        """Callback fired by ConfigService when UI sliders change."""
+        self.cfg = new_cfg
+        try:
+            # Update temporal consensus
+            if hasattr(self._consensus, "voting_window_size"):
+                self._consensus.voting_window_size = int(getattr(new_cfg, "VOTING_WINDOW_SIZE", 10))
+            if hasattr(self._consensus, "min_consensus_frames"):
+                self._consensus.min_consensus_frames = int(getattr(new_cfg, "MIN_CONSENSUS_FRAMES", 1))
+
+            # Update identity lock
+            if hasattr(self._id_lock, "lock_threshold"):
+                self._id_lock.lock_threshold = float(getattr(new_cfg, "IDENTITY_LOCK_THRESHOLD", 0.42))
+            if hasattr(self._id_lock, "consensus_frames"):
+                self._id_lock.consensus_frames = int(getattr(new_cfg, "LOCK_CONSENSUS_FRAMES", 3))
+            if hasattr(self._id_lock, "verify_sim"):
+                self._id_lock.verify_sim = float(getattr(new_cfg, "LOCK_EMBEDDING_VERIFY", 0.38))
+
+            # Update adaptive threshold
+            if hasattr(self._adaptive_thresh, "base_similarity_threshold"):
+                self._adaptive_thresh.base_similarity_threshold = float(getattr(new_cfg, "BASE_SIMILARITY_THRESHOLD", 0.42))
+            if hasattr(self._adaptive_thresh, "min_similarity_threshold"):
+                self._adaptive_thresh.min_similarity_threshold = float(getattr(new_cfg, "MIN_SIMILARITY_THRESHOLD", 0.35))
+            if hasattr(self._adaptive_thresh, "max_similarity_threshold"):
+                self._adaptive_thresh.max_similarity_threshold = float(getattr(new_cfg, "MAX_SIMILARITY_THRESHOLD", 0.60))
+
+            logger.info(f"[cam {self.cam_id}] Processed live config update.")
+        except Exception as e:
+            logger.error(f"[cam {self.cam_id}] Failed to apply live config update: {e}")
+
     # ------------------------------------------------------------------ #
     # Lifecycle                                                            #
     # ------------------------------------------------------------------ #
 
-    def initialize(self) -> bool:
+    def initialize(self, shared_face_app=None, shared_faiss_index=None, shared_faiss_labels=None) -> bool:
         """
         Load models and open the CSV log.
         Safe to call from any thread; returns True on success.
         """
         logger.info(f"[cam {self.cam_id}] Initializing FrameProcessor...")
 
-        # Provider selection
-        try:
-            import onnxruntime as ort
-            available = ort.get_available_providers()
-            configured = list(getattr(self.cfg, "EXECUTION_PROVIDERS", ["CPUExecutionProvider"]))
-            providers = [p for p in configured if p in available] or ["CPUExecutionProvider"]
-        except Exception:
-            providers = ["CPUExecutionProvider"]
+        # InsightFace (use shared instance if provided)
+        if shared_face_app is not None:
+            self._app = shared_face_app
+            logger.info(f"[cam {self.cam_id}] Using pre-loaded InsightFace")
+        else:
+            # Provider selection
+            try:
+                import onnxruntime as ort
+                available = ort.get_available_providers()
+                configured = list(getattr(self.cfg, "EXECUTION_PROVIDERS", ["CPUExecutionProvider"]))
+                providers = [p for p in configured if p in available] or ["CPUExecutionProvider"]
+            except Exception:
+                providers = ["CPUExecutionProvider"]
 
-        # InsightFace
-        try:
-            from insightface.app import FaceAnalysis
-            self._app = FaceAnalysis(name="buffalo_l", providers=providers)
-            self._app.prepare(ctx_id=0, det_size=tuple(getattr(self.cfg, "DETECTION_SIZE", (640, 640))))
-            logger.info(f"[cam {self.cam_id}] InsightFace ready ({providers})")
-        except Exception as e:
-            logger.error(f"[cam {self.cam_id}] InsightFace failed: {e}")
-            return False
+            try:
+                from insightface.app import FaceAnalysis
+                self._app = FaceAnalysis(name="buffalo_l", providers=providers)
+                self._app.prepare(ctx_id=0, det_size=tuple(getattr(self.cfg, "DETECTION_SIZE", (640, 640))))
+                logger.info(f"[cam {self.cam_id}] InsightFace ready ({providers})")
+            except Exception as e:
+                logger.error(f"[cam {self.cam_id}] InsightFace failed: {e}")
+                return False
 
         # YOLO + ByteTrack (one tracker per camera = independent track IDs)
         try:
@@ -256,15 +297,20 @@ class FrameProcessor:
             logger.error(f"[cam {self.cam_id}] YOLO failed: {e}")
             return False
 
-        # FAISS index
-        try:
-            self._index, self._labels, _ = load_database(self._app)
-            logger.info(
-                f"[cam {self.cam_id}] FAISS ready — "
-                f"{len(self._labels)} enrolled faces"
-            )
-        except Exception as e:
-            logger.warning(f"[cam {self.cam_id}] FAISS load failed: {e} — detection only")
+        # FAISS index (use shared instance if provided)
+        if shared_faiss_index is not None and shared_faiss_labels is not None:
+            self._index = shared_faiss_index
+            self._labels = shared_faiss_labels
+            logger.info(f"[cam {self.cam_id}] Using pre-loaded FAISS index")
+        else:
+            try:
+                self._index, self._labels, _ = load_database(self._app)
+                logger.info(
+                    f"[cam {self.cam_id}] FAISS ready — "
+                    f"{len(self._labels)} enrolled faces"
+                )
+            except Exception as e:
+                logger.warning(f"[cam {self.cam_id}] FAISS load failed: {e} — detection only")
 
         # Unknown manager
         if self.unknowns_dir:

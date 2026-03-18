@@ -39,24 +39,26 @@ def video_process(
             if stop_flag.value:
                 break
 
-            # Push to inference queue (drop if inference is busy)
+            # Push to inference queue (drop oldest if inference is busy)
             try:
                 frame_queue.put_nowait((cam_idx, frame))
             except queue.Full:
-                logger.warning(
-                    "frame queue overflow; dropping frame",
-                    extra={"camera_id": cam_idx, "error_code": ErrorCode.QUEUE_OVERFLOW},
-                )
+                try:
+                    frame_queue.get_nowait()
+                    frame_queue.put_nowait((cam_idx, frame))
+                except queue.Empty:
+                    pass
                 record_queue_drop("frame")
 
-            # Push to display queue (drop if UI is busy)
+            # Push to display queue (drop oldest if UI is busy)
             try:
                 display_queue.put_nowait((cam_idx, frame))
             except queue.Full:
-                logger.warning(
-                    "display queue overflow; dropping frame",
-                    extra={"camera_id": cam_idx, "error_code": ErrorCode.QUEUE_OVERFLOW},
-                )
+                try:
+                    display_queue.get_nowait()
+                    display_queue.put_nowait((cam_idx, frame))
+                except queue.Empty:
+                    pass
                 record_queue_drop("display")
 
     finally:
