@@ -5,15 +5,18 @@ Adaptive threshold manager with caching
 import numpy as np
 from typing import Dict
 
-# Import config
-import sys
-import os
-from config import BASE_SIMILARITY_THRESHOLD, MIN_SIMILARITY_THRESHOLD, MAX_SIMILARITY_THRESHOLD
-
 class AdaptiveThreshold:
     """Manages adaptive similarity thresholds with caching optimization."""
 
-    def __init__(self):
+    def __init__(
+        self,
+        base_similarity_threshold: float = 0.42,
+        min_similarity_threshold: float = 0.35,
+        max_similarity_threshold: float = 0.60,
+    ):
+        self._base = float(base_similarity_threshold)
+        self._min = float(min_similarity_threshold)
+        self._max = float(max_similarity_threshold)
         self.track_thresholds: Dict[int, float] = {}
         # Optimization: Cache last quality and frame count to avoid recalculation
         self.track_last_quality: Dict[int, float] = {}
@@ -41,8 +44,8 @@ class AdaptiveThreshold:
         age_adjustment = -0.002 * age_factor
 
         # High quality -> lower threshold (easier match). Low quality -> higher threshold (harder match to prevent FP).
-        threshold = BASE_SIMILARITY_THRESHOLD - quality_adjustment + age_adjustment
-        threshold = float(np.clip(threshold, MIN_SIMILARITY_THRESHOLD, MAX_SIMILARITY_THRESHOLD))
+        threshold = self._base - quality_adjustment + age_adjustment
+        threshold = float(np.clip(threshold, self._min, self._max))
 
         # Cache the result
         self.track_thresholds[track_id] = threshold

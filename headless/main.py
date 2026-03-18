@@ -45,6 +45,7 @@ from facetrack.infra.logging import setup_logging
 # Import processes
 from headless.processes.video_capture import video_process
 from headless.processes.inference import inference_process
+from facetrack.ui.overlay_renderer import draw_cv2
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -234,30 +235,7 @@ def main():
                 res_list = overlay_results.get(cam_idx, [])
                 total_tracks += len(res_list)
 
-                for res in res_list:
-                    x1, y1, x2, y2 = res["bbox"]
-                    name = res.get("name", "Unknown")
-                    score = res.get("score", 0.0)
-                    gender = res.get("gender", "Unknown")
-                    age = res.get("age", 0)
-                    quality = res.get("quality", 0.0)
-
-                    color = (0, 255, 0) if not _is_unknown_name(name) else (0, 0, 255)
-                    cv2.rectangle(f_draw, (x1, y1), (x2, y2), color, 2)
-
-                    if not _is_unknown_name(name):
-                        label = f"{name} {int(score * 100)}%"
-                        sub_label = f"{gender}, {age}y | Q:{quality:.2f}"
-                    else:
-                        label = name
-                        sub_label = f"Q:{quality:.2f}"
-
-                    (text_w, text_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-                    cv2.rectangle(f_draw, (x1, y1 - text_h - 25), (x1 + text_w, y1), color, -1)
-                    cv2.putText(f_draw, label, (x1, y1 - 10),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-                    cv2.putText(f_draw, sub_label, (x1, y2 + 20),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                f_draw = draw_cv2(f_draw, res_list)
 
                 cv2.putText(f_draw, f"CAM {cam_idx}", (10, 30),
                             cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)

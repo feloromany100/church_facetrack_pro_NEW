@@ -7,17 +7,15 @@ import faiss
 from collections import defaultdict
 from typing import Dict, List, Tuple, Optional
 
-# Import config
-import sys
-import os
-from config import IDENTITY_LOCK_THRESHOLD, LOCK_CONSENSUS_FRAMES, LOCK_EMBEDDING_VERIFY
-
 class IdentityLock:
     """Lock identity only when very confident + consistent."""
 
-    def __init__(self, lock_threshold: float = IDENTITY_LOCK_THRESHOLD,
-                 consensus_frames: int = LOCK_CONSENSUS_FRAMES,
-                 verify_sim: float = LOCK_EMBEDDING_VERIFY):
+    def __init__(
+        self,
+        lock_threshold: float = 0.42,
+        consensus_frames: int = 3,
+        verify_sim: float = 0.38,
+    ):
         self.lock_threshold = lock_threshold
         self.consensus_frames = consensus_frames
         self.verify_sim = verify_sim

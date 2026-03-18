@@ -11,6 +11,7 @@ from PySide6.QtGui import (QPainter, QColor, QPen, QFont, QPixmap,
 from facetrack.models.camera import CameraState, CameraStatus
 from facetrack.models.person import Detection
 from facetrack.ui.theme import C, F
+from facetrack.ui.overlay_renderer import draw_qt
 
 class _OverlayWidget(QWidget):
     """Transparent widget drawn on top of the video label."""
@@ -32,47 +33,13 @@ class _OverlayWidget(QWidget):
         if not self._detections:
             return
         p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w, h = self.width(), self.height()
-        sx = w / self._frame_w
-        sy = h / self._frame_h
-
-        for det in self._detections:
-            x1, y1, x2, y2 = det.bbox
-            rx1, ry1 = int(x1 * sx), int(y1 * sy)
-            rx2, ry2 = int(x2 * sx), int(y2 * sy)
-
-            color = QColor(C.DANGER) if det.is_unknown else QColor(C.NEON_BLUE)
-            glow  = QColor(color)
-            glow.setAlpha(60)
-
-            # Glow fill
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(glow)
-            p.drawRoundedRect(rx1, ry1, rx2 - rx1, ry2 - ry1, 4, 4)
-
-            # Border
-            pen = QPen(color, 2)
-            p.setPen(pen)
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawRoundedRect(rx1, ry1, rx2 - rx1, ry2 - ry1, 4, 4)
-
-            # Label background
-            label = f"{det.name}  {int(det.confidence * 100)}%" if not det.is_unknown else "Unknown"
-            font = QFont("Helvetica Neue", 10, QFont.Weight.Bold)
-            p.setFont(font)
-            fm = p.fontMetrics()
-            lw = fm.horizontalAdvance(label) + 12
-            lh = fm.height() + 6
-            lx, ly = rx1, max(0, ry1 - lh - 2)
-            bg = QColor(color)
-            bg.setAlpha(220)
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(bg)
-            p.drawRoundedRect(lx, ly, lw, lh, 4, 4)
-            p.setPen(QColor("#000000") if not det.is_unknown else QColor("#ffffff"))
-            p.drawText(lx + 6, ly + lh - 5, label)
-
+        draw_qt(
+            p,
+            self._detections,
+            frame_size=(self._frame_w, self._frame_h),
+            widget_size=(self.width(), self.height()),
+            colors={"known": C.NEON_BLUE, "unknown": C.DANGER},
+        )
         p.end()
 
 class CameraTile(QWidget):

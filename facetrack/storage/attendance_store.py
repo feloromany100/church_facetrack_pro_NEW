@@ -34,8 +34,8 @@ class AttendanceStore:
 
         # Load cooldown from config (default 300s)
         try:
-            from config import COOLDOWN_SECONDS
-            self._cooldown: float = float(COOLDOWN_SECONDS)
+            from facetrack.services.config_service import ConfigService
+            self._cooldown: float = float(ConfigService().load().COOLDOWN_SECONDS)
         except Exception:
             self._cooldown = 300.0
 

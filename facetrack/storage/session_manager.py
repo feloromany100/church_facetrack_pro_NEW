@@ -6,18 +6,19 @@ import os
 from datetime import datetime
 from typing import Tuple
 
-try:
-    from config import SESSIONS_BASE_DIR
-except ImportError:
-    SESSIONS_BASE_DIR = None
+from facetrack.services.config_service import ConfigService
 
-def create_session() -> Tuple[str, str, str]:
+def create_session(cfg=None) -> Tuple[str, str, str]:
     """
     Create a new session folder with timestamp.
     Returns: (session_folder, unknowns_dir, csv_path)
     """
+    if cfg is None:
+        cfg = ConfigService().load()
+
     session_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")
-    base = SESSIONS_BASE_DIR if SESSIONS_BASE_DIR else os.getcwd()
+    base_dir = getattr(cfg, "SESSIONS_BASE_DIR", None)
+    base = base_dir if base_dir else os.getcwd()
     session_folder = os.path.join(base, "Sessions", session_id)
     unknowns_dir = os.path.join(session_folder, "Unknowns")
 

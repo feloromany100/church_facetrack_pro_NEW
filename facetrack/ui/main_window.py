@@ -47,7 +47,8 @@ def _load_cameras_from_config() -> list:
     Falls back to a single webcam (index 0) if config is unavailable.
     """
     try:
-        from config import CAMERA_SOURCES
+        from facetrack.services.config_service import ConfigService
+        CAMERA_SOURCES = ConfigService().load().CAMERA_SOURCES
         cameras = []
         for idx, src in enumerate(CAMERA_SOURCES[:4]):
             name = f"Camera {idx + 1}"
@@ -74,6 +75,8 @@ class MainWindow(QMainWindow):
         # ── Core services ─────────────────────────────────────────────────────
         self._store   = AttendanceStore(seed_dummy=demo_mode)
         self._alerts  = AlertManager()
+        from facetrack.services.config_service import ConfigService
+        self._cfg = ConfigService().load()
         # FrameProcessor is instantiated per-camera inside CameraWorker.
         # MainWindow no longer holds a shared engine — each worker owns its own.
 
@@ -180,7 +183,7 @@ class MainWindow(QMainWindow):
         # to its own CSV and unknowns folder — no cross-thread file sharing.
         try:
             from facetrack.storage.session_manager import create_session
-            session_folder, unknowns_dir, csv_path = create_session()
+            session_folder, unknowns_dir, csv_path = create_session(self._cfg)
         except Exception as e:
             logger.warning("Could not create session for cam %d: %s", cfg.id, e)
             session_folder = unknowns_dir = csv_path = ""
@@ -190,6 +193,7 @@ class MainWindow(QMainWindow):
             session_folder=session_folder,
             unknowns_dir=unknowns_dir,
             csv_path=csv_path,
+            cfg=self._cfg,
         )
         thread = QThread(self)
 

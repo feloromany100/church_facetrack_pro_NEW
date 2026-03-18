@@ -6,11 +6,6 @@ import numpy as np
 from collections import defaultdict, deque, Counter
 from typing import Dict, Tuple
 
-# Import config
-import sys
-import os
-from config import VOTING_WINDOW_SIZE, MIN_CONSENSUS_FRAMES
-
 def _is_unknown(name: str) -> bool:
     """Return True if name represents an Unknown identity."""
     return name.startswith("Unknown")
@@ -18,18 +13,20 @@ def _is_unknown(name: str) -> bool:
 class TemporalConsensus:
     """Manages temporal voting and consensus for face recognition with optimized vote counting."""
 
-    def __init__(self):
+    def __init__(self, voting_window_size: int = 10, min_consensus_frames: int = 1):
+        self._voting_window_size = int(max(1, voting_window_size))
+        self._min_consensus_frames = int(max(1, min_consensus_frames))
         self.track_votes: Dict[int, deque] = defaultdict(
-            lambda: deque(maxlen=VOTING_WINDOW_SIZE))
+            lambda: deque(maxlen=self._voting_window_size))
         self.track_confidences: Dict[int, deque] = defaultdict(
-            lambda: deque(maxlen=VOTING_WINDOW_SIZE))
-        # Use VOTING_WINDOW_SIZE consistently for all attribute deques
+            lambda: deque(maxlen=self._voting_window_size))
+        # Use voting window size consistently for all attribute deques
         self.track_ages: Dict[int, deque] = defaultdict(
-            lambda: deque(maxlen=VOTING_WINDOW_SIZE))
+            lambda: deque(maxlen=self._voting_window_size))
         self.track_genders: Dict[int, deque] = defaultdict(
-            lambda: deque(maxlen=VOTING_WINDOW_SIZE))
+            lambda: deque(maxlen=self._voting_window_size))
         self.track_quality_scores: Dict[int, deque] = defaultdict(
-            lambda: deque(maxlen=VOTING_WINDOW_SIZE))
+            lambda: deque(maxlen=self._voting_window_size))
         # Optimization: Maintain running vote counts for faster consensus
         self.track_vote_counts: Dict[int, Dict[str, float]] = defaultdict(dict)
 
@@ -43,7 +40,7 @@ class TemporalConsensus:
         All five deques are appended together to stay in sync.
         """
         # Optimization: Remove old vote from counts if deque is full
-        if len(self.track_votes[track_id]) == VOTING_WINDOW_SIZE:
+        if len(self.track_votes[track_id]) == self._voting_window_size:
             old_vote = self.track_votes[track_id][0]
             old_conf = self.track_confidences[track_id][0]
             old_qual = self.track_quality_scores[track_id][0]
@@ -103,7 +100,7 @@ class TemporalConsensus:
 
         # Enforce minimum consensus before committing to a known identity
         final_name = best_name
-        if not _is_unknown(final_name) and len(votes) < MIN_CONSENSUS_FRAMES:
+        if not _is_unknown(final_name) and len(votes) < self._min_consensus_frames:
             final_name = "Unknown"
 
         # Compute avg_confidence from the *best* known identity's votes,

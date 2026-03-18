@@ -303,7 +303,8 @@ class SettingsPage(Pane):
 
     def _load_config(self):
         try:
-            import config as cfg
+            from facetrack.services.config_service import ConfigService
+            cfg = ConfigService().load()
             self._base_thresh      = cfg.BASE_SIMILARITY_THRESHOLD
             self._min_thresh       = cfg.MIN_SIMILARITY_THRESHOLD
             self._max_thresh       = cfg.MAX_SIMILARITY_THRESHOLD
