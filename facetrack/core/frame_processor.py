@@ -30,14 +30,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 # ── project root on path (removed once pyproject.toml / pip install -e . is used) ──
 
-from config import (
-    DETECTION_SIZE, EXECUTION_PROVIDERS,
-    IDENTITY_LOCK_THRESHOLD, LOCK_CONSENSUS_FRAMES, LOCK_EMBEDDING_VERIFY,
-    COOLDOWN_SECONDS, UNKNOWN_COOLDOWN, UNKNOWN_SESSION_LIMIT,
-    UNKNOWN_SESSION_WINDOW, PERSISTENCE_RECOVERY_THRESHOLD,
-    PERSON_DETECTION_MODEL, PERSON_CONF_THRESHOLD, EMBEDDING_DIM,
-    MIN_BBOX_PIXELS,
-)
+EMBEDDING_DIM = 512  # default; overridden via injected cfg where applicable
 from facetrack.managers.temporal_consensus import TemporalConsensus
 from facetrack.managers.identity_lock import IdentityLock
 from facetrack.managers.unknown_manager import UnknownManager
@@ -47,6 +40,7 @@ from facetrack.managers.track_confidence import TrackConfidence
 from facetrack.core.quality_assessment import assess_face_quality
 from facetrack.core.database import load_database
 from facetrack.infra.metrics import record_frame_processed
+from facetrack.services.config_service import ConfigService
 
 # scipy is optional — fall back to greedy matching if not installed
 try:
@@ -163,11 +157,15 @@ class FrameProcessor:
     def __init__(
         self,
         cam_id: int,
+        cfg=None,
         session_folder: str = "",
         unknowns_dir: str = "",
         csv_path: str = "",
     ):
         self.cam_id = cam_id
+        if cfg is None:
+            cfg = ConfigService().load()
+        self.cfg = cfg
         self.session_folder = session_folder
         self.unknowns_dir = unknowns_dir
         self.csv_path = csv_path
@@ -181,13 +179,20 @@ class FrameProcessor:
         self._labels: List[str] = []
 
         # Per-track state managers
-        self._consensus = TemporalConsensus()
-        self._id_lock = IdentityLock(
-            lock_threshold=IDENTITY_LOCK_THRESHOLD,
-            consensus_frames=LOCK_CONSENSUS_FRAMES,
-            verify_sim=LOCK_EMBEDDING_VERIFY,
+        self._consensus = TemporalConsensus(
+            voting_window_size=int(getattr(self.cfg, "VOTING_WINDOW_SIZE", 10)),
+            min_consensus_frames=int(getattr(self.cfg, "MIN_CONSENSUS_FRAMES", 1)),
         )
-        self._adaptive_thresh = AdaptiveThreshold()
+        self._id_lock = IdentityLock(
+            lock_threshold=float(getattr(self.cfg, "IDENTITY_LOCK_THRESHOLD", 0.42)),
+            consensus_frames=int(getattr(self.cfg, "LOCK_CONSENSUS_FRAMES", 3)),
+            verify_sim=float(getattr(self.cfg, "LOCK_EMBEDDING_VERIFY", 0.38)),
+        )
+        self._adaptive_thresh = AdaptiveThreshold(
+            base_similarity_threshold=float(getattr(self.cfg, "BASE_SIMILARITY_THRESHOLD", 0.42)),
+            min_similarity_threshold=float(getattr(self.cfg, "MIN_SIMILARITY_THRESHOLD", 0.35)),
+            max_similarity_threshold=float(getattr(self.cfg, "MAX_SIMILARITY_THRESHOLD", 0.60)),
+        )
         self._id_persistence = IdentityPersistence(persistence_time=5.0)
         self._track_confidence = TrackConfidence()
         self._unknown_manager: Optional[UnknownManager] = None
@@ -195,15 +200,9 @@ class FrameProcessor:
             lambda: {"embeddings": deque(maxlen=10), "last_good": None}
         )
 
-        # Attendance / session state
-        self._attendance_log: Dict[str, float] = {}
-        self._unknown_logs: Dict[str, float] = {}
+        # Session state (unknown handling only; attendance persistence lives outside)
         self._unknown_session_count = 0
         self._unknown_session_reset_time = time.time()
-
-        # CSV handle (opened after initialize())
-        self._csv_handle = None
-        self._csv_write_count = 0
 
         # Performance counters
         self._frame_count = 0
@@ -227,8 +226,8 @@ class FrameProcessor:
         try:
             import onnxruntime as ort
             available = ort.get_available_providers()
-            providers = [p for p in EXECUTION_PROVIDERS if p in available] \
-                        or ["CPUExecutionProvider"]
+            configured = list(getattr(self.cfg, "EXECUTION_PROVIDERS", ["CPUExecutionProvider"]))
+            providers = [p for p in configured if p in available] or ["CPUExecutionProvider"]
         except Exception:
             providers = ["CPUExecutionProvider"]
 
@@ -236,7 +235,7 @@ class FrameProcessor:
         try:
             from insightface.app import FaceAnalysis
             self._app = FaceAnalysis(name="buffalo_l", providers=providers)
-            self._app.prepare(ctx_id=0, det_size=DETECTION_SIZE)
+            self._app.prepare(ctx_id=0, det_size=tuple(getattr(self.cfg, "DETECTION_SIZE", (640, 640))))
             logger.info(f"[cam {self.cam_id}] InsightFace ready ({providers})")
         except Exception as e:
             logger.error(f"[cam {self.cam_id}] InsightFace failed: {e}")
@@ -245,7 +244,7 @@ class FrameProcessor:
         # YOLO + ByteTrack (one tracker per camera = independent track IDs)
         try:
             from ultralytics import YOLO
-            self._yolo = YOLO(PERSON_DETECTION_MODEL)
+            self._yolo = YOLO(str(getattr(self.cfg, "PERSON_DETECTION_MODEL", "yolov8n.pt")))
             try:
                 import torch
                 if torch.cuda.is_available():
@@ -273,20 +272,11 @@ class FrameProcessor:
                 self.unknowns_dir, max_images=5, match_threshold=0.45
             )
 
-        # CSV log
-        if self.csv_path:
-            try:
-                self._csv_handle = open(
-                    self.csv_path, "a", encoding="utf-8", buffering=8192
-                )
-            except Exception as e:
-                logger.warning(f"[cam {self.cam_id}] CSV open failed: {e}")
-
         # Warmup
         try:
             warmup = np.zeros((640, 640, 3), dtype=np.uint8)
             self._yolo.track(
-                warmup, classes=[0], conf=PERSON_CONF_THRESHOLD,
+                warmup, classes=[0], conf=float(getattr(self.cfg, "PERSON_CONF_THRESHOLD", 0.35)),
                 tracker="custom_bytetrack.yaml", persist=True, verbose=False,
             )
             self._app.get(warmup)
@@ -298,14 +288,7 @@ class FrameProcessor:
         return True
 
     def cleanup(self):
-        """Flush CSV, release GPU memory."""
-        if self._csv_handle:
-            try:
-                self._csv_handle.flush()
-                self._csv_handle.close()
-            except Exception:
-                pass
-            self._csv_handle = None
+        """Release GPU memory."""
         try:
             del self._app
         except Exception:
@@ -354,7 +337,7 @@ class FrameProcessor:
         t1 = time.time()
         try:
             yolo_results = self._yolo.track(
-                frame_bgr, classes=[0], conf=PERSON_CONF_THRESHOLD,
+                frame_bgr, classes=[0], conf=float(getattr(self.cfg, "PERSON_CONF_THRESHOLD", 0.35)),
                 tracker="custom_bytetrack.yaml", persist=True, verbose=False,
             )
         except Exception as e:
@@ -428,7 +411,13 @@ class FrameProcessor:
             if face.det_score >= 0.9:
                 is_good, quality = True, 0.9
             else:
-                is_good, quality = assess_face_quality(crop, face)
+                is_good, quality = assess_face_quality(
+                    crop,
+                    face,
+                    face_min_size=int(getattr(self.cfg, "FACE_MIN_SIZE", 40)),
+                    face_blur_threshold=float(getattr(self.cfg, "FACE_BLUR_THRESHOLD", 10.0)),
+                    face_angle_threshold=float(getattr(self.cfg, "FACE_ANGLE_THRESHOLD", 60.0)),
+                )
             if not is_good or face.det_score < 0.4:
                 continue
 
@@ -459,7 +448,7 @@ class FrameProcessor:
                 from insightface.app import FaceAnalysis
                 self._app = FaceAnalysis(name="buffalo_l",
                                          providers=["CPUExecutionProvider"])
-                self._app.prepare(ctx_id=0, det_size=DETECTION_SIZE)
+                self._app.prepare(ctx_id=0, det_size=tuple(getattr(self.cfg, "DETECTION_SIZE", (640, 640))))
                 logger.info("[cam %d] Switched to CPUExecutionProvider", self.cam_id)
             except Exception as e2:
                 logger.error("[cam %d] CPU fallback failed: %s", self.cam_id, e2)
@@ -680,7 +669,7 @@ class FrameProcessor:
                 p_name, p_score = self._id_persistence.get_persistent_identity(
                     track_id, now
                 )
-                if p_name and p_score > PERSISTENCE_RECOVERY_THRESHOLD:
+                if p_name and p_score > float(getattr(self.cfg, "PERSISTENCE_RECOVERY_THRESHOLD", 0.35)):
                     final_name, final_score = p_name, p_score
 
             # ── unknown handling ────────────────────────────────────────
@@ -688,9 +677,7 @@ class FrameProcessor:
                 det, track_id, current_emb, final_name, now
             )
 
-            # ── CSV log ─────────────────────────────────────────────────
-            self._maybe_log_csv(final_name, final_score, final_age, final_gender,
-                                track_id, now)
+            # Persistence is handled outside FrameProcessor (service/data layers).
 
             confidence_score = self._track_confidence.get_confidence(track_id)
             _, _, _, _, avg_quality = self._consensus.get_consensus(track_id)
@@ -729,7 +716,7 @@ class FrameProcessor:
         if face_crop is not None and face_crop.size > 0:
             uid_prefix = os.path.basename(self.session_folder).split("_")[-1] \
                          if self.session_folder else "0"
-            if self._unknown_session_count < UNKNOWN_SESSION_LIMIT:
+            if self._unknown_session_count < int(getattr(self.cfg, "UNKNOWN_SESSION_LIMIT", 60)):
                 uid = self._unknown_manager.process_unknown(
                     global_tid, current_emb, face_crop, uid_prefix=uid_prefix
                 )
@@ -741,40 +728,6 @@ class FrameProcessor:
             return f"Unknown_{self._unknown_manager.track_to_unknown_id[global_tid]}"
 
         return final_name
-
-    def _maybe_log_csv(
-        self,
-        name: str, score: float, age: int, gender: str,
-        track_id: str, now: float,
-    ):
-        """Write one CSV row per person per cooldown window."""
-        if self._csv_handle is None:
-            return
-
-        is_unknown = name.startswith("Unknown")
-        cooldown = UNKNOWN_COOLDOWN if is_unknown else COOLDOWN_SECONDS
-        key = (self.cam_id, track_id) if is_unknown else name
-        last = self._unknown_logs.get(key, 0.0) if is_unknown \
-               else self._attendance_log.get(name, 0.0)
-
-        if now - last < cooldown:
-            return
-
-        if is_unknown:
-            self._unknown_logs[key] = now
-        else:
-            self._attendance_log[name] = now
-            logger.info("Attendance logged: %s (cam %d)", name, self.cam_id)
-
-        try:
-            self._csv_handle.write(
-                f"{name},{datetime.now()},{score:.3f},{age},{gender},{track_id}\n"
-            )
-            self._csv_write_count += 1
-            if self._csv_write_count % 10 == 0:
-                self._csv_handle.flush()
-        except Exception as e:
-            logger.debug("CSV write error: %s", e)
 
     def _cleanup_stale_tracks(self, active_ids: set):
         """Remove state for tracks that are no longer in the frame."""

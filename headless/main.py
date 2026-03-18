@@ -19,22 +19,9 @@ from multiprocessing import Process, Queue, Value
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
-# Import configuration (single place for main.py)
-from config import (
-    CAMERA_SOURCES,
-    WINDOW_NAME,
-    FRAME_QUEUE_SIZE,
-    RESULT_QUEUE_SIZE,
-    PHOTOS_DIR,
-    DISPLAY_GRID_WIDTH,
-    DISPLAY_GRID_HEIGHT,
-    DISPLAY_QUEUE_SIZE,
-    BBOX_SMOOTHING_ALPHA,
-    MIN_SIMILARITY_THRESHOLD,
-    BASE_SIMILARITY_THRESHOLD,
-    MAX_SIMILARITY_THRESHOLD,
-    FACE_MIN_SIZE,
-)
+# Central config (loaded once)
+from facetrack.services.config_service import ConfigService
+CFG = ConfigService().load()
 
 # Import utilities
 from facetrack.storage.session_manager import create_session
@@ -54,23 +41,23 @@ def validate_config():
     """Validate configuration parameters."""
     errors = []
 
-    if not 0.0 <= BBOX_SMOOTHING_ALPHA <= 1.0:
-        errors.append(f"BBOX_SMOOTHING_ALPHA must be between 0 and 1, got {BBOX_SMOOTHING_ALPHA}")
+    if not 0.0 <= float(getattr(CFG, "BBOX_SMOOTHING_ALPHA", 1.0)) <= 1.0:
+        errors.append(f"BBOX_SMOOTHING_ALPHA must be between 0 and 1, got {getattr(CFG, 'BBOX_SMOOTHING_ALPHA', None)}")
     
-    if MIN_SIMILARITY_THRESHOLD > BASE_SIMILARITY_THRESHOLD:
-        errors.append(f"MIN_SIMILARITY_THRESHOLD ({MIN_SIMILARITY_THRESHOLD}) cannot be greater than BASE_SIMILARITY_THRESHOLD ({BASE_SIMILARITY_THRESHOLD})")
+    if float(CFG.MIN_SIMILARITY_THRESHOLD) > float(CFG.BASE_SIMILARITY_THRESHOLD):
+        errors.append(f"MIN_SIMILARITY_THRESHOLD ({CFG.MIN_SIMILARITY_THRESHOLD}) cannot be greater than BASE_SIMILARITY_THRESHOLD ({CFG.BASE_SIMILARITY_THRESHOLD})")
     
-    if BASE_SIMILARITY_THRESHOLD > MAX_SIMILARITY_THRESHOLD:
-        errors.append(f"BASE_SIMILARITY_THRESHOLD ({BASE_SIMILARITY_THRESHOLD}) cannot be greater than MAX_SIMILARITY_THRESHOLD ({MAX_SIMILARITY_THRESHOLD})")
+    if float(CFG.BASE_SIMILARITY_THRESHOLD) > float(CFG.MAX_SIMILARITY_THRESHOLD):
+        errors.append(f"BASE_SIMILARITY_THRESHOLD ({CFG.BASE_SIMILARITY_THRESHOLD}) cannot be greater than MAX_SIMILARITY_THRESHOLD ({CFG.MAX_SIMILARITY_THRESHOLD})")
     
-    if FACE_MIN_SIZE < 20:
-        errors.append(f"FACE_MIN_SIZE too small ({FACE_MIN_SIZE}), minimum recommended is 20")
+    if int(CFG.FACE_MIN_SIZE) < 20:
+        errors.append(f"FACE_MIN_SIZE too small ({CFG.FACE_MIN_SIZE}), minimum recommended is 20")
     
-    if not CAMERA_SOURCES:
+    if not CFG.CAMERA_SOURCES:
         errors.append("CAMERA_SOURCES is empty, at least one camera source is required")
     
-    if len(CAMERA_SOURCES) > 4:
-        logger.warning(f"⚠️ More than 4 cameras configured ({len(CAMERA_SOURCES)}), only first 4 will be used")
+    if len(CFG.CAMERA_SOURCES) > 4:
+        logger.warning(f"⚠️ More than 4 cameras configured ({len(CFG.CAMERA_SOURCES)}), only first 4 will be used")
     
     if errors:
         for error in errors:
@@ -90,8 +77,8 @@ def build_grid(
 
     Expects frames with keys 0..N-1 for N cameras; missing keys render as black.
     """
-    width = width if width is not None else DISPLAY_GRID_WIDTH
-    height = height if height is not None else DISPLAY_GRID_HEIGHT
+    width = width if width is not None else CFG.DISPLAY_GRID_WIDTH
+    height = height if height is not None else CFG.DISPLAY_GRID_HEIGHT
     num_cameras = len(frames)
     grid = np.zeros((height, width, 3), dtype=np.uint8)
     
@@ -128,7 +115,7 @@ def main():
     validate_config()
 
     try:
-        SESSION_FOLDER, UNKNOWNS_DIR, CURRENT_SESSION_CSV = create_session()
+        SESSION_FOLDER, UNKNOWNS_DIR, CURRENT_SESSION_CSV = create_session(CFG)
     except OSError as e:
         logger.error(f"❌ Failed to create session: {e}")
         sys.exit(1)
@@ -136,18 +123,18 @@ def main():
     logger.info("🚀 Starting Enterprise Face Recognition System...")
     logger.info(f"📁 Session folder: {SESSION_FOLDER}")
 
-    if not os.path.exists(PHOTOS_DIR) or not os.listdir(PHOTOS_DIR):
+    if not os.path.exists(CFG.PHOTOS_DIR) or not os.listdir(CFG.PHOTOS_DIR):
         logger.warning(
-            f"⚠️ Photos directory is empty! Please add face images to '{PHOTOS_DIR}'."
+            f"⚠️ Photos directory is empty! Please add face images to '{CFG.PHOTOS_DIR}'."
         )
         logger.warning("⚠️ System will run in detection-only mode until faces are enrolled.")
 
-    num_cameras = min(4, len(CAMERA_SOURCES))
-    frame_queue = Queue(maxsize=FRAME_QUEUE_SIZE)
-    result_queue = Queue(maxsize=RESULT_QUEUE_SIZE)
+    num_cameras = min(4, len(CFG.CAMERA_SOURCES))
+    frame_queue = Queue(maxsize=int(CFG.FRAME_QUEUE_SIZE))
+    result_queue = Queue(maxsize=int(CFG.RESULT_QUEUE_SIZE))
     display_queue_size = (
-        DISPLAY_QUEUE_SIZE
-        if DISPLAY_QUEUE_SIZE is not None
+        CFG.DISPLAY_QUEUE_SIZE
+        if CFG.DISPLAY_QUEUE_SIZE is not None
         else num_cameras * 2
     )
     display_queue = Queue(maxsize=display_queue_size)
@@ -155,7 +142,7 @@ def main():
 
     # Start video capture processes
     video_processes = []
-    for idx, source in enumerate(CAMERA_SOURCES[:4]):
+    for idx, source in enumerate(CFG.CAMERA_SOURCES[:4]):
         p = Process(target=video_process, args=(idx, source, frame_queue, display_queue, stop_flag))
         p.daemon = True
         p.start()
@@ -177,7 +164,7 @@ def main():
     p_inference.daemon = True
     p_inference.start()
 
-    cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+    cv2.namedWindow(CFG.WINDOW_NAME, cv2.WINDOW_NORMAL)
 
     live_frames = {}
     overlay_results = {}
@@ -221,7 +208,7 @@ def main():
                 label = "Initializing models..." if p_inference.is_alive() else "Waiting for frames..."
                 cv2.putText(placeholder, label, (20, 240),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
-                cv2.imshow(WINDOW_NAME, placeholder)
+                cv2.imshow(CFG.WINDOW_NAME, placeholder)
                 if cv2.waitKey(10) == 27:
                     break
                 continue
@@ -255,7 +242,7 @@ def main():
             cv2.putText(mosaic, status_text, (10, mosaic.shape[0] - 20),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
-            cv2.imshow(WINDOW_NAME, mosaic)
+            cv2.imshow(CFG.WINDOW_NAME, mosaic)
             if cv2.waitKey(1) == 27:
                 break
 

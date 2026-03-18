@@ -20,7 +20,7 @@ venv/
 # Runtime artifacts / data
 sessions/
 photos/
-data/
+/data/
 index/
 *.bin
 *.log
