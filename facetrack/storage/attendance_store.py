@@ -47,6 +47,9 @@ class AttendanceStore:
         except Exception:
             self._cooldown = 300.0
 
+        # Restore historical records from the SQLite database on startup
+        self._load_from_db()
+
         # M-08 FIX: only seed synthetic data when explicitly requested
         if seed_dummy:
             self._seed_dummy_data()
@@ -130,9 +133,68 @@ class AttendanceStore:
             self._repository.close()
 
     def __del__(self):
-        self.close()
+        try:
+            if (
+                hasattr(self, "_repository")
+                and self._repository is not None
+                and hasattr(self._repository, "_worker_thread")
+                and self._repository._worker_thread.is_alive()
+            ):
+                logger.warning(
+                    "AttendanceStore was garbage-collected without calling close() — "
+                    "flushing background writer now."
+                )
+                self.close()
+        except Exception:
+            pass  # Never raise from __del__
 
-    # ── Dummy seed ────────────────────────────────────────────────────────────
+    # ── DB restore ────────────────────────────────────────────────────────────────
+    def _load_from_db(self):
+        """
+        Populate the in-memory record list from SQLite on startup.
+
+        This makes all read methods (get_all, get_today, weekly_counts, search)
+        work correctly after a process restart.  The cooldown map is also
+        restored so recently-seen persons are not immediately re-logged.
+        """
+        if not hasattr(self, "_repository") or self._repository is None:
+            return
+        try:
+            import sqlite3
+            with sqlite3.connect(self._repository.db_path) as conn:
+                rows = conn.execute(
+                    "SELECT id, person_id, person_name, camera_id, camera_name, "
+                    "timestamp, confidence, person_group, is_unknown "
+                    "FROM attendance ORDER BY timestamp"
+                ).fetchall()
+
+            with self._lock:
+                for row in rows:
+                    try:
+                        rec = AttendanceRecord(
+                            id=row[0],
+                            person_id=row[1] or "",
+                            person_name=row[2],
+                            camera_id=row[3] or 0,
+                            camera_name=row[4] or "",
+                            timestamp=datetime.fromisoformat(row[5]),
+                            confidence=float(row[6]) if row[6] is not None else 0.0,
+                            group=PersonGroup(row[7]) if row[7] else PersonGroup.VISITOR,
+                            is_unknown=bool(row[8]),
+                        )
+                        self._records.append(rec)
+                        # Restore cooldown state so recently-logged persons are
+                        # not immediately re-logged after a restart
+                        self._last_logged[rec.person_name] = rec.timestamp.timestamp()
+                    except Exception:
+                        pass  # Corrupt row — skip it
+
+            logger.info("Restored %d attendance records from SQLite", len(self._records))
+
+        except Exception as exc:
+            logger.warning("Could not restore attendance history from SQLite: %s", exc)
+
+    # ── Dummy seed ────────────────────────────────────────────────────────────────
     def _seed_dummy_data(self):
         names = [
             ("Mina Samir",  "p001", PersonGroup.SERVANT),

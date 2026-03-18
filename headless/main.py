@@ -107,11 +107,6 @@ def build_grid(
                 grid[row*h:(row+1)*h, col*w:(col+1)*w] = cv2.resize(frames[i], (w, h))
         return grid
 
-def _is_unknown_name(name) -> bool:
-    """True if name represents an unknown (unrecognized) identity."""
-    return name is None or (
-        isinstance(name, str) and name.startswith("Unknown")
-    )
 
 def main():
     """Main entry point. Use Ctrl+C for graceful shutdown (flushes CSV, closes windows)."""

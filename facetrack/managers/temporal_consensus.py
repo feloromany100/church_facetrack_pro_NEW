@@ -30,6 +30,24 @@ class TemporalConsensus:
         # Optimization: Maintain running vote counts for faster consensus
         self.track_vote_counts: Dict[int, Dict[str, float]] = defaultdict(dict)
 
+    # -- Public property API (used by FrameProcessor._on_config_updated) ----
+
+    @property
+    def voting_window_size(self) -> int:
+        return self._voting_window_size
+
+    @voting_window_size.setter
+    def voting_window_size(self, value: int) -> None:
+        self._voting_window_size = int(max(1, value))
+
+    @property
+    def min_consensus_frames(self) -> int:
+        return self._min_consensus_frames
+
+    @min_consensus_frames.setter
+    def min_consensus_frames(self, value: int) -> None:
+        self._min_consensus_frames = int(max(1, value))
+
     def add_vote(self, track_id: int, name: str, confidence: float,
                  age: int, gender: str, quality_score: float):
         """

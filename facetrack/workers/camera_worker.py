@@ -50,7 +50,6 @@ class CameraWorker(QObject):
         csv_path: str = "",
         detect_every_n: int = 3,
         cfg=None,
-        shared_face_app=None,
         shared_faiss_index=None,
         shared_faiss_labels=None,
     ):
@@ -58,10 +57,9 @@ class CameraWorker(QObject):
         self.config = config
         self._detect_every_n = detect_every_n
         self._active = False
-        
-        self._shared_face_app = shared_face_app
+
         self._shared_faiss_index = shared_faiss_index
-        self._shared_faiss_labels = shared_faiss_labels || []
+        self._shared_faiss_labels = shared_faiss_labels or []
 
         # Core objects — created in start_capture (worker thread)
         self._capture: FrameCapture = None
@@ -97,7 +95,6 @@ class CameraWorker(QObject):
             csv_path=self._csv_path,
         )
         ok = self._processor.initialize(
-            shared_face_app=self._shared_face_app,
             shared_faiss_index=self._shared_faiss_index,
             shared_faiss_labels=self._shared_faiss_labels,
         )

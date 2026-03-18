@@ -13,8 +13,11 @@ logger = logging.getLogger("IndexingService")
 class IndexingWorker(QObject):
     """
     Background worker that executes load_database().
+    Emits only the FAISS index + labels — NOT the FaceAnalysis app.
+    Each CameraWorker builds its own FaceAnalysis via model_factory so that
+    concurrent .get() calls never share an ONNX session across threads.
     """
-    finished = Signal(object, list, dict)  # (index, labels, face_app)
+    finished = Signal(object, list)   # (faiss_index, labels)
     error = Signal(str)
 
     def __init__(self, cfg=None):
@@ -24,28 +27,19 @@ class IndexingWorker(QObject):
     def run(self):
         logger.info("Starting background FAISS indexing...")
         try:
-            # 1. Initialize FaceAnalysis provider exactly as FrameProcessor does
-            try:
-                import onnxruntime as ort
-                available = ort.get_available_providers()
-                configured = list(getattr(self.cfg, "EXECUTION_PROVIDERS", ["CPUExecutionProvider"]))
-                providers = [p for p in configured if p in available] or ["CPUExecutionProvider"]
-            except Exception:
-                providers = ["CPUExecutionProvider"]
-
-            try:
-                from insightface.app import FaceAnalysis
-                face_app = FaceAnalysis(name="buffalo_l", providers=providers)
-                face_app.prepare(ctx_id=0, det_size=tuple(getattr(self.cfg, "DETECTION_SIZE", (640, 640))))
-            except Exception as e:
-                self.error.emit(f"Failed to initialize InsightFace for indexing: {str(e)}")
+            from facetrack.infra.model_factory import build_face_analysis_app
+            # Build a temporary FaceAnalysis only to compute embeddings for the index.
+            # This instance is NOT shared — it is released once indexing completes.
+            face_app = build_face_analysis_app(self.cfg, label="indexer")
+            if face_app is None:
+                self.error.emit("Failed to initialize InsightFace: all providers exhausted")
                 return
 
-            # 2. Run the heavy blocking database load
             index, labels, _ = load_database(face_app)
-            
-            # Emit success
-            self.finished.emit(index, labels, face_app)
+            # face_app goes out of scope here — GPU memory released.
+            del face_app
+
+            self.finished.emit(index, labels)
 
         except Exception as e:
             logger.exception("Background indexing failed")

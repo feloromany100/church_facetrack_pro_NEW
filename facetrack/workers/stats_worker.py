@@ -3,7 +3,6 @@ StatsWorker — polls system metrics every second.
 Emits a dict with cpu, gpu, ram usage.
 """
 import time
-import random
 from PySide6.QtCore import QThread, Signal
 
 class StatsWorker(QThread):
@@ -37,9 +36,8 @@ class StatsWorker(QThread):
             cpu = psutil.cpu_percent(interval=None)
             ram = psutil.virtual_memory().percent
         else:
-            # Smooth random simulation
-            cpu = max(5, min(95, random.gauss(35, 10)))
-            ram = max(20, min(90, random.gauss(55, 8)))
+            cpu = 0.0   # psutil not installed; real value unavailable
+            ram = 0.0
 
         # GPU — try pynvml, fall back to simulation
         gpu = gpu_mem = 0.0
@@ -52,8 +50,8 @@ class StatsWorker(QThread):
             gpu     = util.gpu
             gpu_mem = mem.used / 1024 ** 3
         except Exception:
-            gpu     = max(0, min(100, random.gauss(45, 12)))
-            gpu_mem = round(random.uniform(1.5, 4.5), 1)
+            gpu     = 0.0   # pynvml not installed; real value unavailable
+            gpu_mem = 0.0
 
         return {
             "cpu":     round(cpu, 1),

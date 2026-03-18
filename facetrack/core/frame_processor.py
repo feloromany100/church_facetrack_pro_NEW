@@ -72,7 +72,8 @@ def safe_embedding(emb: np.ndarray) -> np.ndarray:
     return (emb / norm).astype(np.float32)
 
 def clip_bbox_to_frame(
-    x1: int, y1: int, w: int, h: int, width: int, height: int
+    x1: int, y1: int, w: int, h: int, width: int, height: int,
+    min_bbox_pixels: int = 8,
 ) -> Optional[List[int]]:
     """Clip bbox to frame bounds; return [l, t, w, h] or None if too small."""
     x1 = max(0, min(x1, width - 1))
@@ -80,7 +81,7 @@ def clip_bbox_to_frame(
     x2 = max(x1 + 1, min(x1 + w, width))
     y2 = max(y1 + 1, min(y1 + h, height))
     w_clip, h_clip = x2 - x1, y2 - y1
-    if w_clip < MIN_BBOX_PIXELS or h_clip < MIN_BBOX_PIXELS:
+    if w_clip < min_bbox_pixels or h_clip < min_bbox_pixels:
         return None
     return [x1, y1, w_clip, h_clip]
 
@@ -259,30 +260,16 @@ class FrameProcessor:
         """
         logger.info(f"[cam {self.cam_id}] Initializing FrameProcessor...")
 
-        # InsightFace (use shared instance if provided)
+        # ── 1. InsightFace (use shared instance if provided) ────────────────
         if shared_face_app is not None:
             self._app = shared_face_app
             logger.info(f"[cam {self.cam_id}] Using pre-loaded InsightFace")
         else:
-            # Provider selection
-            try:
-                import onnxruntime as ort
-                available = ort.get_available_providers()
-                configured = list(getattr(self.cfg, "EXECUTION_PROVIDERS", ["CPUExecutionProvider"]))
-                providers = [p for p in configured if p in available] or ["CPUExecutionProvider"]
-            except Exception:
-                providers = ["CPUExecutionProvider"]
-
-            try:
-                from insightface.app import FaceAnalysis
-                self._app = FaceAnalysis(name="buffalo_l", providers=providers)
-                self._app.prepare(ctx_id=0, det_size=tuple(getattr(self.cfg, "DETECTION_SIZE", (640, 640))))
-                logger.info(f"[cam {self.cam_id}] InsightFace ready ({providers})")
-            except Exception as e:
-                logger.error(f"[cam {self.cam_id}] InsightFace failed: {e}")
+            self._app = self._init_insightface()
+            if self._app is None:
                 return False
 
-        # YOLO + ByteTrack (one tracker per camera = independent track IDs)
+        # ── 2. YOLO + ByteTrack (one tracker per camera = independent IDs) ──
         try:
             from ultralytics import YOLO
             self._yolo = YOLO(str(getattr(self.cfg, "PERSON_DETECTION_MODEL", "yolov8n.pt")))
@@ -297,7 +284,7 @@ class FrameProcessor:
             logger.error(f"[cam {self.cam_id}] YOLO failed: {e}")
             return False
 
-        # FAISS index (use shared instance if provided)
+        # ── 3. FAISS index (use shared instance if provided) ────────────────
         if shared_faiss_index is not None and shared_faiss_labels is not None:
             self._index = shared_faiss_index
             self._labels = shared_faiss_labels
@@ -312,13 +299,13 @@ class FrameProcessor:
             except Exception as e:
                 logger.warning(f"[cam {self.cam_id}] FAISS load failed: {e} — detection only")
 
-        # Unknown manager
+        # ── 4. Unknown manager ──────────────────────────────────────────────
         if self.unknowns_dir:
             self._unknown_manager = UnknownManager(
                 self.unknowns_dir, max_images=5, match_threshold=0.45
             )
 
-        # Warmup
+        # ── 5. Warmup ───────────────────────────────────────────────────────
         try:
             warmup = np.zeros((640, 640, 3), dtype=np.uint8)
             self._yolo.track(
@@ -332,6 +319,14 @@ class FrameProcessor:
 
         self._ready = True
         return True
+
+    def _init_insightface(self):
+        """
+        Initialise InsightFace via the shared model factory.
+        Returns a ready FaceAnalysis app, or None on failure.
+        """
+        from facetrack.infra.model_factory import build_face_analysis_app
+        return build_face_analysis_app(self.cfg, label=f"cam-{self.cam_id}")
 
     def cleanup(self):
         """Release GPU memory."""
@@ -535,7 +530,9 @@ class FrameProcessor:
                 continue
 
             px1, py1, px2, py2 = filtered_pb[p_idx]
-            clipped = clip_bbox_to_frame(px1, py1, px2 - px1, py2 - py1, w, h)
+            clipped = clip_bbox_to_frame(
+                px1, py1, px2 - px1, py2 - py1, w, h,
+                min_bbox_pixels=int(getattr(self.cfg, "MIN_BBOX_PIXELS", 8)))
             if clipped is None:
                 continue
             l, t, bw, bh = clipped
@@ -562,21 +559,33 @@ class FrameProcessor:
         return detections_data, matched_face_idx
 
     def _filter_subboxes(self, person_boxes: List[Tuple]) -> set:
-        """Remove boxes that are heavily contained within a larger sibling box."""
-        valid = set(range(len(person_boxes)))
-        for i in range(len(person_boxes)):
-            for j in range(len(person_boxes)):
-                if i == j or i not in valid or j not in valid:
-                    continue
-                x1i, y1i, x2i, y2i = person_boxes[i]
-                x1j, y1j, x2j, y2j = person_boxes[j]
-                area_i = max(1, (x2i - x1i) * (y2i - y1i))
-                area_j = max(1, (x2j - x1j) * (y2j - y1j))
-                ix = max(0, min(x2i, x2j) - max(x1i, x1j))
-                iy = max(0, min(y2i, y2j) - max(y1i, y1j))
-                if ix * iy / area_i > 0.8 and area_i <= area_j:
-                    valid.discard(i)
-        return valid
+        """
+        Remove boxes that are heavily contained within a larger sibling box.
+
+        Vectorized with numpy: O(n) array operations replace the O(n²) nested
+        Python loop.  Result is identical to the original algorithm.
+        """
+        if len(person_boxes) < 2:
+            return set(range(len(person_boxes)))
+
+        pb = np.array(person_boxes, dtype=np.float32)       # (N, 4) — x1 y1 x2 y2
+        areas = np.maximum(1.0, (pb[:, 2] - pb[:, 0]) * (pb[:, 3] - pb[:, 1]))
+
+        # Intersection corners — broadcast (N, 1) vs (1, N) → (N, N)
+        ix1 = np.maximum(pb[:, 0, None], pb[None, :, 0])
+        iy1 = np.maximum(pb[:, 1, None], pb[None, :, 1])
+        ix2 = np.minimum(pb[:, 2, None], pb[None, :, 2])
+        iy2 = np.minimum(pb[:, 3, None], pb[None, :, 3])
+        inter = np.maximum(0.0, ix2 - ix1) * np.maximum(0.0, iy2 - iy1)
+
+        # ioa[i, j] = fraction of box-i's area covered by box-j's overlap
+        ioa = inter / areas[:, None]
+
+        # Box i is a sub-box of j when >80% of i lies inside j AND j is at least as large
+        contained = (ioa > 0.8) & (areas[:, None] <= areas[None, :])
+        np.fill_diagonal(contained, False)
+
+        return {int(i) for i in np.where(~contained.any(axis=1))[0]}
 
     def _add_fallback_faces(
         self,
@@ -595,7 +604,9 @@ class FrameProcessor:
             px2 = min(w, fx2 + int(fw * 0.1))
             py1 = max(0, fy1 - int(fh * 0.2))
             py2 = min(h, fy2 + int(fh * 0.5))
-            clipped = clip_bbox_to_frame(px1, py1, px2 - px1, py2 - py1, w, h)
+            clipped = clip_bbox_to_frame(
+                px1, py1, px2 - px1, py2 - py1, w, h,
+                min_bbox_pixels=int(getattr(self.cfg, "MIN_BBOX_PIXELS", 8)))
             if clipped is None:
                 continue
             l, t, bw, bh = clipped
@@ -656,7 +667,7 @@ class FrameProcessor:
         now = time.time()
 
         # Reset unknown session counter on time-window boundary
-        if now - self._unknown_session_reset_time > UNKNOWN_SESSION_WINDOW:
+        if now - self._unknown_session_reset_time > float(getattr(self.cfg, "UNKNOWN_SESSION_WINDOW", 300)):
             self._unknown_session_count = 0
             self._unknown_session_reset_time = now
 

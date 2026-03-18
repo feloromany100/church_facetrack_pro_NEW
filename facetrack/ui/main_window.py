@@ -5,10 +5,13 @@ Cameras are loaded from config.py (CAMERA_SOURCES) when available.
 """
 import os
 import sys
+import time
+import json
 import logging
 
 from PySide6.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QStackedWidget
 from PySide6.QtCore import Qt, QThread, Slot
+from facetrack.models.person import PersonGroup
 
 from facetrack.ui.theme import C, Pane
 from facetrack.ui.components.sidebar import Sidebar
@@ -81,12 +84,22 @@ class MainWindow(QMainWindow):
         # FrameProcessor is instantiated per-camera inside CameraWorker.
         # MainWindow no longer holds a shared engine — each worker owns its own.
 
+        # Load name → group mapping from name_to_group.json
+        try:
+            with open("name_to_group.json", "r", encoding="utf-8") as _ntg_f:
+                self._name_to_group: dict = json.load(_ntg_f)
+            logger.info("Loaded %d name→group mappings from name_to_group.json",
+                        len(self._name_to_group))
+        except Exception as _ntg_err:
+            logger.warning("name_to_group.json not found or invalid: %s", _ntg_err)
+            self._name_to_group = {}
+
         # Per-camera unknown alert cooldown: cam_id → last alert timestamp
         self._unknown_alert_last: dict = {}
         self._unknown_alert_cooldown: float = 30.0  # seconds between unknown alerts per camera
 
-        # Background loaded models
-        self._shared_face_app = None
+        # Background loaded models (FAISS only — face_app is NOT shared;
+        # each CameraWorker builds its own FaceAnalysis via model_factory)
         self._shared_faiss_index = None
         self._shared_faiss_labels = []
         self._models_ready = False
@@ -215,7 +228,6 @@ class MainWindow(QMainWindow):
             unknowns_dir=unknowns_dir,
             csv_path=csv_path,
             cfg=self._cfg,
-            shared_face_app=self._shared_face_app,
             shared_faiss_index=self._shared_faiss_index,
             shared_faiss_labels=self._shared_faiss_labels,
         )
@@ -242,24 +254,27 @@ class MainWindow(QMainWindow):
         pair = self._cam_workers.pop(cam_id, None)
         if pair:
             worker, thread = pair
-            worker.stop()          # sets _active = False in the worker loop
-            thread.quit()          # ask event loop to exit (no-op for run() loops, but safe)
-            thread.wait(3000)      # wait up to 3s for the loop to notice _active=False
+            worker.stop()
+            thread.quit()
+            thread.wait(3000)
         count = len(self._cam_workers)
         self._top_bar.set_camera_count(count)
         self._dashboard.set_camera_count(count)
         self._settings_page.notify_camera_stopped(cam_id)
 
     # ── Slots ─────────────────────────────────────────────────────────────────
-    @Slot(object, list, object)
-    def _on_indexing_finished(self, index, labels, face_app):
+    @Slot(object, list)
+    def _on_indexing_finished(self, index, labels):
+        """Called when background FAISS indexing completes."""
         logger.info("Background indexing finished. Releasing pending cameras.")
         self._shared_faiss_index = index
         self._shared_faiss_labels = labels
-        self._shared_face_app = face_app
+        # NOTE: face_app is intentionally NOT stored or shared here.
+        # Each CameraWorker builds its own FaceAnalysis instance via
+        # model_factory.build_face_analysis_app() to avoid sharing an
+        # ONNX session across threads (InsightFace is not thread-safe).
         self._models_ready = True
-        
-        # Start any cameras that users tried to launch while indexing
+
         for cfg in self._pending_cameras:
             self._start_camera(cfg)
         self._pending_cameras.clear()
@@ -287,7 +302,6 @@ class MainWindow(QMainWindow):
         Attendance logging is delegated entirely to AttendanceStore.log()
         which owns the cooldown gate — no duplicate gate here.
         """
-        import time
         self._cameras_page.update_detections(cam_id, detections)
         cam_name = (self._cam_workers[cam_id][0].config.name
                     if cam_id in self._cam_workers else f"Cam {cam_id}")
@@ -299,9 +313,14 @@ class MainWindow(QMainWindow):
             confidence  = det.get("confidence", 0.0)
             is_unknown  = name.startswith("Unknown")
 
-            # Determine group from name_to_group mapping if available
-            from facetrack.models.person import PersonGroup
-            group = PersonGroup.UNKNOWN if is_unknown else PersonGroup.VISITOR
+            if is_unknown:
+                group = PersonGroup.UNKNOWN
+            else:
+                group_str = self._name_to_group.get(name, "Visitor")
+                try:
+                    group = PersonGroup(group_str)
+                except ValueError:
+                    group = PersonGroup.VISITOR
 
             self._store.log(
                 person_name=name,
@@ -342,12 +361,18 @@ class MainWindow(QMainWindow):
 
     # ── Cleanup ───────────────────────────────────────────────────────────────
     def closeEvent(self, event):
-        # Stop stats worker (has its own quit+wait)
+        # Stop stats worker
         self._stats_worker.stop()
 
-        # Stop all camera workers
-        for cam_id in list(self._cam_workers.keys()):
-            self._stop_camera(cam_id)
+        # Signal all cameras to stop (non-blocking)
+        for cam_id, (worker, thread) in list(self._cam_workers.items()):
+            worker.stop()
+            thread.quit()
+
+        # Now wait for all threads to finish (in parallel, not sequentially)
+        for cam_id, (worker, thread) in list(self._cam_workers.items()):
+            thread.wait(3000)
+        self._cam_workers.clear()
 
         self._store.close()
         super().closeEvent(event)

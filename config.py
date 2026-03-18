@@ -88,12 +88,12 @@ SESSIONS_BASE_DIR = None
 PERSON_DETECTION_MODEL = "yolov8n.pt"  # YOLOv8 model for fast person detection
 PERSON_CONF_THRESHOLD = 0.35           # Confidence threshold for person detection (more lenient)
 
-# Execution providers (order matters - first available will be used)
-# Removed CoreML per user request. TensorRT will accelerate RTX 3050 laptops/desktops.
+# Execution providers (order matters — first available is used).
+# TensorrtExecutionProvider removed: cublas64_12.dll is not installed on this machine.
+# Re-add "TensorrtExecutionProvider" here if TensorRT is installed in future.
 EXECUTION_PROVIDERS = [
-    "TensorrtExecutionProvider",
-    "CUDAExecutionProvider", 
-    "CPUExecutionProvider"
+    "CUDAExecutionProvider",
+    "CPUExecutionProvider",
 ]
 
 # GPU-optimized detection size (larger = more accurate, uses more GPU memory)

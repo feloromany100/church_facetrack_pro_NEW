@@ -55,7 +55,10 @@ class UnknownManager:
         """Background thread: write face crops to disk without blocking inference."""
         while True:
             try:
-                img_path, face_crop = self.save_queue.get(timeout=1.0)
+                item = self.save_queue.get(timeout=1.0)
+                if item is None:               # shutdown sentinel — exit cleanly
+                    break
+                img_path, face_crop = item
                 cv2.imwrite(img_path, face_crop)
             except Exception as e:
                 logger.debug(f"Save worker skipped frame: {e}")
@@ -199,6 +202,19 @@ class UnknownManager:
                 return False
         # Unknown not yet registered (edge case) — allow one save
         return True
+
+    def close(self) -> None:
+        """
+        Flush all pending face-crop saves and stop the background writer thread.
+        Call this before process exit to avoid losing the last few saves.
+        """
+        try:
+            self.save_queue.put_nowait(None)   # sentinel triggers worker break
+        except Exception:
+            pass
+        self._save_thread.join(timeout=3.0)
+        if self._save_thread.is_alive():
+            logger.warning("UnknownManager save thread did not exit within the 3 s timeout")
 
     def clear_track(self, track_id: int):
         """Remove the track→unknown_id mapping (identity record is kept)."""

@@ -12,6 +12,7 @@ dist/
 .ruff_cache/
 .venv/
 venv/
+venv311/
 
 # IDE / tooling
 .cursor/
